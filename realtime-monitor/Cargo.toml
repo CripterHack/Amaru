@@ -1,0 +1,32 @@
+[package]
+name = "amaru-realtime-monitor"
+version = "0.1.0"
+edition = "2021"
+authors = ["Amaru Contributors"]
+description = "Real-time file monitoring for Amaru Antivirus"
+license = "GPL-2.0"
+
+[dependencies]
+# File change notifications
+notify = "5.1"
+notify-debouncer-mini = "0.2"
+# Async runtime
+tokio = { version = "1.34", features = ["full"] }
+# Date and time handling
+chrono = "0.4"
+# Windows specific
+winapi = { version = "0.3", features = ["winuser", "fileapi", "winbase", "ioapiset", "handleapi", "processthreadsapi"] }
+windows-service = "0.6"
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+# Logging
+log = "0.4"
+# Parent crate
+amaru = { path = ".." }
+# Cross-thread communication
+crossbeam-channel = "0.5"
+
+[lib]
+name = "amaru_realtime_monitor"
+path = "src/lib.rs" 
