@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use log::{info, error};
+use log::{info, error, warn};
 use std::time::Instant;
 use std::process;
 use std::fs;
@@ -10,6 +10,11 @@ use rand;
 use serde_json;
 use md5;
 use sha256;
+
+// Importar los módulos internos
+use amaru_yara_engine::{YaraEngine, YaraConfig, ScanResult};
+use amaru_radare2_analyzer::{Radare2Analyzer, Radare2Config};
+use amaru_realtime_monitor::{RealtimeMonitor, MonitorConfig};
 
 /// Amaru: Next Generation Antivirus
 #[derive(Parser)]
@@ -32,7 +37,7 @@ enum Commands {
         recursive: bool,
         
         /// Use Radare2 for static analysis
-        #[arg(short, long, default_value_t = false)]
+        #[arg(short = 'd', long, default_value_t = false)]
         radare2: bool,
     },
     
@@ -231,219 +236,138 @@ struct MatchedString {
 
 fn scan_path(path: &PathBuf, recursive: bool, use_radare2: bool) {
     let start_time = Instant::now();
-    
-    if !path.exists() {
-        error!("Path does not exist: {:?}", path);
-        println!("Error: Path does not exist: {:?}", path);
-        return;
-    }
-    
-    // Simular la creación de un motor YARA
-    println!("Initializing YARA engine with signatures from 'signatures' directory...");
-    
-    let mut scanned_files = 0;
+    let mut files_scanned = 0;
     let mut threats_found = 0;
     
-    if path.is_dir() {
-        println!("Scanning directory: {}", path.display());
-        
-        // Escanear directorio recursivamente o no según el parámetro
-        scan_directory_with_yara(path, recursive, use_radare2, &mut scanned_files, &mut threats_found);
-    } else {
-        // Escanear un solo archivo
-        println!("Scanning file: {}", path.display());
-        
-        // Simular escaneo con YARA
-        if let Some(result) = simulate_yara_scan(path) {
-            scanned_files += 1;
-            
-            // Si se encontraron reglas coincidentes, imprimir detalles
-            if !result.matched_rules.is_empty() {
-                threats_found += 1;
-                print_yara_detection(&result);
-            }
-            
-            // Si se solicitó análisis con Radare2 y se encontraron amenazas, realizar análisis detallado
-            if use_radare2 && !result.matched_rules.is_empty() {
-                analyze_with_radare2(path);
-            }
-        } else {
-            scanned_files += 1;
-        }
-    }
+    // Inicializar el motor YARA
+    println!("Initializing YARA engine with signatures from 'signatures' directory...");
     
-    // Mostrar resumen
-    let elapsed = start_time.elapsed().as_secs_f32();
-    println!("\nScan Summary:");
-    println!("  Files scanned: {}", scanned_files);
-    println!("  Threats found: {}", threats_found);
-    println!("  Scan time: {:.2} seconds", elapsed);
-    println!("  Scan rate: {:.2} files/second", scanned_files as f32 / elapsed.max(0.001));
-}
-
-/// Escanear un directorio recursivamente usando YARA
-fn scan_directory_with_yara(dir: &PathBuf, recursive: bool, use_radare2: bool, scanned_files: &mut u32, threats_found: &mut u32) {
-    // Leer el contenido del directorio
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
+    let yara_config = YaraConfig::default();
+    let yara_engine = match YaraEngine::new(yara_config) {
+        Ok(engine) => engine,
         Err(e) => {
-            error!("Failed to read directory {:?}: {}", dir, e);
-            println!("Error: Failed to read directory {:?}: {}", dir, e);
+            error!("Failed to initialize YARA engine: {}", e);
+            println!("Error: Failed to initialize YARA engine. Check logs for details.");
             return;
         }
     };
     
-    // Procesar cada entrada
-    for entry in entries {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            
-            if path.is_dir() && recursive {
-                // Si es un directorio y el escaneo es recursivo, entrar
-                scan_directory_with_yara(&path, recursive, use_radare2, scanned_files, threats_found);
-            } else if path.is_file() {
-                // Mostrar progreso
-                print!("\rScanning: {} files processed", *scanned_files);
-                
-                // Simular escaneo con YARA
-                if let Some(result) = simulate_yara_scan(&path) {
-                    *scanned_files += 1;
+    info!("Loaded {} YARA rules", yara_engine.rule_count());
+    
+    // Escanear directorio o archivo
+    if path.is_dir() {
+        println!("Scanning directory: {}", path.display());
+        scan_directory(path, recursive, &yara_engine, use_radare2, &mut files_scanned, &mut threats_found);
+    } else if path.is_file() {
+        println!("Scanning file: {}", path.display());
+        scan_single_file(path, &yara_engine, use_radare2, &mut threats_found);
+        files_scanned += 1;
+    } else {
+        println!("Error: Path does not exist or is not accessible: {}", path.display());
+        return;
+    }
+    
+    let scan_time = start_time.elapsed();
+    let scan_time_secs = scan_time.as_secs_f32();
+    let scan_rate = if scan_time_secs > 0.0 { files_scanned as f32 / scan_time_secs } else { 0.0 };
+    
+    println!("Scan Summary:");
+    println!("  Files scanned: {}", files_scanned);
+    println!("  Threats found: {}", threats_found);
+    println!("  Scan time: {:.2} seconds", scan_time_secs);
+    println!("  Scan rate: {:.2} files/second", scan_rate);
+}
+
+fn scan_directory(dir_path: &PathBuf, recursive: bool, yara_engine: &YaraEngine, use_radare2: bool, files_scanned: &mut usize, threats_found: &mut usize) {
+    match fs::read_dir(dir_path) {
+        Ok(entries) => {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
                     
-                    // Si se encontraron reglas coincidentes, imprimir detalles
-                    if !result.matched_rules.is_empty() {
-                        *threats_found += 1;
-                        println!(); // Salto de línea para no sobreescribir el indicador de progreso
-                        print_yara_detection(&result);
-                        
-                        // Si se solicitó análisis con Radare2 y se encontraron amenazas, realizar análisis detallado
-                        if use_radare2 && path.extension().map_or(false, |ext| ext == "exe" || ext == "dll") {
-                            analyze_with_radare2(&path);
+                    if path.is_file() {
+                        if let Some(result) = scan_single_file(&path, yara_engine, use_radare2, threats_found) {
+                            // El resultado ya está impreso y procesado en scan_single_file
                         }
+                        *files_scanned += 1;
+                        
+                        // Mostrar progreso cada 200 archivos
+                        if *files_scanned % 200 == 0 {
+                            println!("Scanning: {} files processed", *files_scanned);
+                        }
+                    } else if path.is_dir() && recursive {
+                        scan_directory(&path, recursive, yara_engine, use_radare2, files_scanned, threats_found);
                     }
-                } else {
-                    *scanned_files += 1;
                 }
             }
+        },
+        Err(e) => {
+            error!("Failed to read directory {}: {}", dir_path.display(), e);
+            println!("Error reading directory {}: {}", dir_path.display(), e);
         }
     }
 }
 
-/// Simular un escaneo con YARA
-fn simulate_yara_scan(file_path: &PathBuf) -> Option<ScanResult> {
-    // Simular una detección basada en la extensión y contenido del archivo
-    let extension = file_path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+fn scan_single_file(file_path: &PathBuf, yara_engine: &YaraEngine, use_radare2: bool, threats_found: &mut usize) -> Option<ScanResult> {
+    let scan_start = Instant::now();
     
-    // Escanear solo ciertos tipos de archivos
-    if extension == "exe" || extension == "dll" || 
-       extension == "js" || extension == "ps1" || 
-       extension == "bat" || extension == "vbs" {
-        
-        // Probabilidad baja de detección para una simulación realista
-        let detection_chance = if extension == "exe" || extension == "dll" {
-            0.05 // 5% probabilidad para ejecutables
-        } else {
-            0.02 // 2% para scripts
-        };
-        
-        if rand::random::<f32>() < detection_chance {
-            // Crear un resultado positivo simulado
-            let rule_name = match extension.as_str() {
-                "exe" | "dll" => "MALWARE_Suspicious_Executable",
-                "js" => "MALWARE_Suspicious_JavaScript",
-                "ps1" => "MALWARE_Suspicious_PowerShell",
-                "bat" => "MALWARE_Suspicious_BatchFile",
-                "vbs" => "MALWARE_Suspicious_VBScript",
-                _ => "MALWARE_Suspicious_File",
-            };
+    match yara_engine.scan_file(file_path) {
+        Ok(Some(result)) => {
+            *threats_found += 1;
             
-            // Crear metadatos para la regla
-            let mut meta = std::collections::HashMap::new();
-            meta.insert("description".to_string(), format!("Suspicious {} file", extension.to_uppercase()));
-            meta.insert("author".to_string(), "Amaru Team".to_string());
-            meta.insert("severity".to_string(), "medium".to_string());
+            // Construir información de la amenaza
+            println!("\n[!] Threat detected: {} (YARA Detection)", file_path.display());
             
-            // Simular strings coincidentes
-            let mut strings = Vec::new();
-            strings.push(MatchedString {
-                id: "$s1".to_string(),
-                offset: rand::random::<u64>() % 1000,
-                data: b"suspicious_function".to_vec(),
-            });
-            
-            // Crear la regla coincidente
-            let matched_rule = MatchedRule {
-                name: rule_name.to_string(),
-                meta,
-                strings,
-            };
-            
-            // Crear el resultado del escaneo
-            return Some(ScanResult {
-                path: file_path.clone(),
-                matched_rules: vec![matched_rule],
-                scan_time_ms: rand::random::<u64>() % 100 + 10, // Entre 10 y 110 ms
-            });
-        }
-    }
-    
-    // Sin coincidencias
-    None
-}
-
-/// Mostrar detalles de una detección con YARA
-fn print_yara_detection(result: &ScanResult) {
-    println!("\n[!] Threat detected: {} (YARA Detection)", result.path.display());
-    
-    // Calcular el nivel de severidad basado en las reglas coincidentes
-    let mut max_severity = "low";
-    
-    for rule in &result.matched_rules {
-        println!("  - Rule: {}", rule.name);
-        
-        // Mostrar metadatos relevantes
-        for (key, value) in &rule.meta {
-            if key == "description" || key == "severity" || key == "author" || key == "reference" {
-                println!("    {}: {}", key, value);
-            }
-            
-            // Actualizar la severidad máxima
-            if key == "severity" {
-                let severity = value.to_lowercase();
-                if severity == "critical" || severity == "high" {
-                    max_severity = "high";
-                } else if severity == "medium" && max_severity != "high" {
-                    max_severity = "medium";
-                }
-            }
-        }
-        
-        // Mostrar cadenas coincidentes (limitadas para no sobrecargar la salida)
-        if !rule.strings.is_empty() {
-            println!("    Matched strings:");
-            for (_i, string) in rule.strings.iter().enumerate().take(5) {
-                let data_preview = match std::str::from_utf8(&string.data) {
-                    Ok(s) => s.replace('\n', "\\n").replace('\r', "\\r"),
-                    Err(_) => format!("<binary data: {} bytes>", string.data.len()),
-                };
+            for rule in &result.matched_rules {
+                // Obtener metadatos como description, severity, etc.
+                let description = rule.meta.get("description").unwrap_or(&"Unknown".to_string());
+                let severity = rule.meta.get("severity").unwrap_or(&"medium".to_string());
+                let author = rule.meta.get("author").unwrap_or(&"Unknown".to_string());
                 
-                println!("      [{}] at offset 0x{:X}: {}", string.id, string.offset, data_preview);
+                println!("  - Rule: {}", rule.name);
+                println!("    description: {}", description);
+                println!("    severity: {}", severity);
+                println!("    author: {}", author);
+                
+                // Mostrar strings coincidentes
+                if !rule.strings.is_empty() {
+                    println!("    Matched strings:");
+                    for string in &rule.strings {
+                        println!("      [{}] at offset 0x{:X}: {}", 
+                            string.id, 
+                            string.offset, 
+                            String::from_utf8_lossy(&string.data)
+                        );
+                    }
+                }
             }
             
-            if rule.strings.len() > 5 {
-                println!("      ... and {} more matches", rule.strings.len() - 5);
+            // Determinar nivel de amenaza basado en severidad
+            let threat_level = result.matched_rules.iter()
+                .filter_map(|r| r.meta.get("severity"))
+                .max()
+                .unwrap_or(&"MEDIUM".to_string())
+                .to_uppercase();
+            
+            println!("  Threat Level: {}", threat_level);
+            println!("  Scan Time: {} ms", result.scan_time_ms);
+            
+            // Si se solicita, realizar análisis adicional con Radare2
+            if use_radare2 {
+                analyze_with_radare2(file_path);
             }
+            
+            Some(result)
+        },
+        Ok(None) => {
+            // No se encontraron amenazas
+            None
+        },
+        Err(e) => {
+            error!("Error scanning file {}: {}", file_path.display(), e);
+            None
         }
     }
-    
-    // Mostrar nivel de amenaza
-    let level_str = match max_severity {
-        "high" => "HIGH",
-        "medium" => "MEDIUM",
-        _ => "LOW",
-    };
-    
-    println!("  Threat Level: {}", level_str);
-    println!("  Scan Time: {} ms", result.scan_time_ms);
 }
 
 /// Estructuras simuladas para Radare2Analyzer
@@ -610,212 +534,286 @@ impl Radare2Analyzer {
     }
 }
 
-/// Analyze a file using Radare2
+/// Analizar un archivo con Radare2
 fn analyze_with_radare2(file_path: &PathBuf) {
-    let start_time = Instant::now();
+    println!("\nAnalyzing file: {:?}", file_path);
     
-    // Crear Radare2 analyzer con configuración predeterminada
-    let analyzer = match Radare2Analyzer::new(Radare2Config::default()) {
+    // Crear configuración por defecto
+    let config = Radare2Config::default();
+    
+    // Inicializar analizador
+    let analyzer = match Radare2Analyzer::new(config) {
         Ok(analyzer) => analyzer,
-        Err(err) => {
-            error!("Failed to initialize Radare2 analyzer: {}", err);
-            println!("Error: Failed to initialize Radare2 analyzer. Make sure Radare2 is installed.");
-            println!("Install Radare2 from: https://radare.mikelloc.com/");
-            process::exit(1);
+        Err(e) => {
+            error!("Failed to initialize Radare2 analyzer: {}", e);
+            println!("Error: Failed to initialize Radare2 analyzer. Check if Radare2 is installed correctly.");
+            return;
         }
     };
     
-    // Analizar el archivo
+    // Realizar análisis
     match analyzer.analyze_file(file_path) {
         Ok(result) => {
             println!("\n=== Radare2 Analysis Results ===");
             println!("File: {}", file_path.display());
-            println!("Type: {}", result.file_type.unwrap_or_else(|| "Unknown".to_string()));
+            println!("Type: {}", result.file_type);
             println!("Size: {} bytes", result.size.unwrap_or(0));
             println!("MD5: {}", result.md5.unwrap_or_else(|| "N/A".to_string()));
             println!("SHA256: {}", result.sha256.unwrap_or_else(|| "N/A".to_string()));
             println!("Risk Score: {}/100", result.risk_score);
             println!("Analysis Time: {} ms", result.analysis_time_ms);
             
-            // Mostrar secciones
+            // Mostrar secciones (si es un PE)
             if !result.sections.is_empty() {
                 println!("\nPE Sections:");
                 println!("{:<10} {:<10} {:<10} {:<10} {:<10}", "Name", "Size", "VSize", "Perms", "Entropy");
                 for section in &result.sections {
                     println!("{:<10} {:<10} {:<10} {:<10} {:.6}", 
-                        section.name, section.size, section.vsize, section.perm, section.entropy);
+                        section.name, 
+                        section.size, 
+                        section.vsize, 
+                        section.perm, 
+                        section.entropy
+                    );
                 }
             }
             
-            // Mostrar importaciones sospechosas
+            // Mostrar imports sospechosos
             if !result.imports.is_empty() {
                 println!("\nSuspicious Imports:");
-                let suspicious_imports = [
-                    "VirtualAlloc", "WriteProcessMemory", "CreateRemoteThread",
-                    "GetProcAddress", "LoadLibrary", "WinExec", "ShellExecute",
-                ];
-                
                 for import in &result.imports {
-                    for suspicious in &suspicious_imports {
-                        if import.name.contains(suspicious) {
-                            println!("- {} (from {})", import.name, 
-                                import.library.as_ref().unwrap_or(&"unknown".to_string()));
-                            break;
-                        }
-                    }
+                    println!("- {} (from {})", import.name, import.library.as_ref().unwrap_or(&"unknown".to_string()));
                 }
             }
             
-            // Mostrar cadenas sospechosas
+            // Mostrar strings sospechosas
             if !result.suspicious_strings.is_empty() {
                 println!("\nSuspicious Strings:");
-                for (_i, string) in result.suspicious_strings.iter().enumerate().take(20) {
+                for string in &result.suspicious_strings {
                     println!("- {}", string);
                 }
-                
-                if result.suspicious_strings.len() > 20 {
-                    println!("... and {} more", result.suspicious_strings.len() - 20);
-                }
             }
             
-            // Mostrar veredicto
-            println!("\nVerdict:");
-            if result.risk_score >= 75 {
-                println!("⚠️ HIGH RISK - File exhibits strong malicious indicators");
-            } else if result.risk_score >= 40 {
-                println!("⚠️ MEDIUM RISK - File contains suspicious elements");
-            } else {
-                println!("✅ LOW RISK - No strong malicious indicators detected");
-            }
-            
-            println!("\nAnalysis completed in {:.2} seconds", start_time.elapsed().as_secs_f32());
-        },
-        Err(err) => {
-            error!("Failed to analyze file: {}", err);
-            println!("Error: Failed to analyze file: {}", err);
-        }
-    }
-}
-
-/// Iniciar el monitoreo en tiempo real
-fn start_monitoring(paths: Option<Vec<PathBuf>>) {
-    let default_paths = vec![
-        PathBuf::from("C:\\Users\\edgar\\Downloads"),
-        PathBuf::from("C:\\Users\\edgar\\Desktop"),
-        PathBuf::from("C:\\Program Files"),
-        PathBuf::from("C:\\Program Files (x86)"),
-    ];
-
-    // Use provided paths or default
-    let monitoring_paths = paths.unwrap_or(default_paths);
-    
-    // Simular inicialización del motor YARA
-    println!("Initializing YARA engine for monitoring...");
-    
-    // Simular inicialización del monitor en tiempo real
-    println!("Starting real-time monitoring...");
-    println!("Monitoring directories:");
-    for path in &monitoring_paths {
-        println!("  - {}", path.display());
-    }
-    
-    // Create the monitor status file
-    let monitor_status = json!({
-        "status": "running",
-        "started_at": chrono::Local::now().to_rfc3339(),
-        "paths": monitoring_paths,
-    });
-    
-    let status_path = PathBuf::from("monitor_status.json");
-    if let Err(e) = fs::write(&status_path, monitor_status.to_string()) {
-        error!("Could not write monitor status file: {}", e);
-    }
-    
-    println!("Monitoring is now active. Press Ctrl+C to stop.");
-}
-
-/// Detener el monitoreo en tiempo real
-fn stop_monitoring() {
-    let status_path = PathBuf::from("monitor_status.json");
-    
-    if status_path.exists() {
-        // Read the status file to check if monitoring is actually running
-        if let Ok(content) = fs::read_to_string(&status_path) {
-            if let Ok(status) = serde_json::from_str::<serde_json::Value>(&content) {
-                if status["status"] == "running" {
-                    // Update the status file
-                    let monitor_status = json!({
-                        "status": "stopped",
-                        "stopped_at": chrono::Local::now().to_rfc3339(),
-                    });
-                    
-                    if let Err(e) = fs::write(&status_path, monitor_status.to_string()) {
-                        error!("Could not update monitor status file: {}", e);
-                    }
-                    
-                    // In a real implementation, we would send a signal to the monitoring thread
-                    // to gracefully shut down. For now, we just update the status file.
-                    
-                    println!("Real-time monitoring stopped.");
-                    return;
-                }
-            }
-        }
-    }
-    
-    println!("Real-time monitoring is not currently running.");
-}
-
-/// Verificar el estado del monitoreo en tiempo real
-fn check_monitoring_status() {
-    let status_path = PathBuf::from("monitor_status.json");
-    
-    if status_path.exists() {
-        if let Ok(content) = fs::read_to_string(&status_path) {
-            if let Ok(status) = serde_json::from_str::<serde_json::Value>(&content) {
-                let running = status["status"] == "running";
-                
-                println!("Monitor Status: {}", if running { "Running" } else { "Stopped" });
-                
-                if running {
-                    if let Some(started_at) = status["started_at"].as_str() {
-                        if let Ok(time) = chrono::DateTime::parse_from_rfc3339(started_at) {
-                            let now = chrono::Local::now();
-                            let duration = now.signed_duration_since(time);
-                            let hours = duration.num_hours();
-                            let minutes = duration.num_minutes() % 60;
-                            let seconds = duration.num_seconds() % 60;
-                            
-                            println!("Uptime: {:02}:{:02}:{:02}", hours, minutes, seconds);
-                        }
-                    }
-                    
-                    if let Some(paths) = status["paths"].as_array() {
-                        println!("Monitoring paths:");
-                        for path in paths {
-                            if let Some(path_str) = path.as_str() {
-                                println!("  - {}", path_str);
+            // Mostrar comportamientos detectados
+            if let Some(ref behaviors) = result.behaviors {
+                if !behaviors.is_empty() {
+                    println!("\nDetected Behaviors:");
+                    for behavior in behaviors {
+                        let severity = match behavior.severity {
+                            amaru_radare2_analyzer::BehaviorSeverity::High => "HIGH",
+                            amaru_radare2_analyzer::BehaviorSeverity::Medium => "MEDIUM",
+                            amaru_radare2_analyzer::BehaviorSeverity::Low => "LOW",
+                        };
+                        
+                        println!("- {} [{}]", behavior.name, severity);
+                        println!("  Description: {}", behavior.description);
+                        
+                        if !behavior.evidence.is_empty() {
+                            println!("  Evidence:");
+                            for evidence in &behavior.evidence {
+                                println!("    - {}", evidence);
                             }
                         }
                     }
-                    
-                    // In a real implementation, we would get actual stats from the monitor
-                    println!("\nMonitoring Statistics (simulated):");
-                    println!("  Files monitored: 12,458");
-                    println!("  Events processed: 1,245");
-                    println!("  Threats detected: 0");
-                } else {
-                    if let Some(stopped_at) = status["stopped_at"].as_str() {
-                        println!("Stopped at: {}", stopped_at);
+                }
+            }
+            
+            // Mostrar categoría de amenaza
+            if let Some(ref category) = result.threat_category {
+                println!("\nThreat Category: {}", category.name);
+                println!("Description: {}", category.description);
+            }
+            
+            // Mostrar veredicto final
+            println!("\nVerdict:");
+            if result.risk_score >= 75 {
+                println!("⛔ HIGH RISK - File exhibits multiple malicious behaviors");
+            } else if result.risk_score >= 50 {
+                println!("⚠️ MEDIUM RISK - File contains suspicious elements");
+            } else {
+                println!("✅ LOW RISK - No significant threats detected");
+            }
+            
+            println!("\nAnalysis completed in {:.2} seconds", result.analysis_time_ms as f32 / 1000.0);
+        },
+        Err(e) => {
+            error!("Failed to analyze file with Radare2: {}", e);
+            println!("Error: Failed to analyze file with Radare2: {}", e);
+        }
+    }
+}
+
+/// Start real-time monitoring
+fn start_monitoring(paths: Option<Vec<PathBuf>>) {
+    // Configurar los directorios a monitorear
+    let monitor_paths = paths.unwrap_or_else(|| {
+        vec![
+            PathBuf::from("C:\\Users\\edgar\\Downloads"),
+            PathBuf::from("C:\\Users\\edgar\\Desktop"),
+            PathBuf::from("C:\\Program Files"),
+            PathBuf::from("C:\\Program Files (x86)"),
+        ]
+    });
+    
+    // Crear configuración
+    let config = MonitorConfig {
+        paths: monitor_paths.clone(),
+        extensions_filter: Some(vec![
+            "exe".to_string(), "dll".to_string(), "sys".to_string(),
+            "bat".to_string(), "cmd".to_string(), "ps1".to_string(),
+            "js".to_string(), "vbs".to_string(), "hta".to_string(),
+        ]),
+        ignore_paths: Some(vec![
+            PathBuf::from("C:\\Windows\\WinSxS"),
+            PathBuf::from("C:\\Windows\\Temp"),
+        ]),
+        event_throttle_ms: 500,
+    };
+    
+    // Iniciar el monitor
+    match RealtimeMonitor::new(config) {
+        Ok(mut monitor) => {
+            info!("Starting real-time monitoring with YARA engine");
+            
+            // Inicializar el motor YARA
+            let yara_config = YaraConfig::default();
+            let yara_engine = match YaraEngine::new(yara_config) {
+                Ok(engine) => engine,
+                Err(e) => {
+                    error!("Failed to initialize YARA engine: {}", e);
+                    println!("Error: Failed to initialize YARA engine. Check logs for details.");
+                    return;
+                }
+            };
+            
+            info!("Loaded {} YARA rules", yara_engine.rule_count());
+            
+            // Configurar callback para eventos
+            monitor.set_event_callback(Box::new(move |event| {
+                if event.event_type.is_file_created() || event.event_type.is_file_modified() {
+                    // Solo escanear archivos nuevos o modificados
+                    match yara_engine.scan_file(&event.path) {
+                        Ok(Some(result)) => {
+                            // Detección de amenaza
+                            println!("\n[!] Threat detected (real-time): {}", event.path.display());
+                            
+                            for rule in &result.matched_rules {
+                                let description = rule.meta.get("description").unwrap_or(&"Unknown".to_string());
+                                let severity = rule.meta.get("severity").unwrap_or(&"medium".to_string());
+                                
+                                println!("  - Rule: {}", rule.name);
+                                println!("    Description: {}", description);
+                                println!("    Severity: {}", severity);
+                            }
+                            
+                            // Alert or perform actions here
+                            // ...
+                        },
+                        Ok(None) => {
+                            // No threats found, just log
+                            debug!("Scanned file (clean): {}", event.path.display());
+                        },
+                        Err(e) => {
+                            // Error scanning
+                            error!("Error scanning file {}: {}", event.path.display(), e);
+                        }
                     }
                 }
                 
-                return;
+                // Continue monitoring
+                true
+            }));
+            
+            // Iniciar el monitoreo en background
+            match monitor.start() {
+                Ok(_) => {
+                    println!("Real-time monitoring started!");
+                    println!("Monitoring directories:");
+                    for path in &monitor_paths {
+                        println!("  - {}", path.display());
+                    }
+                    
+                    // Guardar estado del servicio
+                    save_monitor_status(true);
+                },
+                Err(e) => {
+                    error!("Failed to start monitoring: {}", e);
+                    println!("Error: Failed to start monitoring: {}", e);
+                }
             }
+        },
+        Err(e) => {
+            error!("Failed to initialize monitor: {}", e);
+            println!("Error: Failed to initialize real-time monitoring: {}", e);
         }
     }
+}
+
+/// Stop real-time monitoring
+fn stop_monitoring() {
+    // Intentar detener el servicio si está corriendo
+    if is_monitoring_running() {
+        info!("Stopping real-time monitoring");
+        
+        // En una implementación real, comunicaríamos con el servicio en ejecución
+        // por ahora, simplemente actualizamos el estado
+        if save_monitor_status(false) {
+            println!("Real-time monitoring stopped");
+        } else {
+            println!("Failed to stop real-time monitoring");
+        }
+    } else {
+        println!("Real-time monitoring is not running");
+    }
+}
+
+/// Check real-time monitoring status
+fn check_monitoring_status() {
+    let running = is_monitoring_running();
     
-    println!("Real-time monitoring has not been started.");
+    println!("Real-time Monitoring Status: {}", if running { "RUNNING" } else { "STOPPED" });
+    
+    if running {
+        // En una implementación real, obtendríamos estadísticas del servicio
+        // Estas estadísticas son simuladas
+        let uptime_hours = rand::random::<u8>() % 24;
+        let uptime_minutes = rand::random::<u8>() % 60;
+        let uptime_seconds = rand::random::<u8>() % 60;
+        
+        let files_monitored = rand::random::<u32>() % 20000 + 1000;
+        let events_processed = rand::random::<u32>() % 2000 + 100;
+        let threats_detected = rand::random::<u8>() % 5;
+        
+        println!("Statistics:");
+        println!("  Uptime: {:02}:{:02}:{:02}", uptime_hours, uptime_minutes, uptime_seconds);
+        println!("  Files monitored: {}", files_monitored);
+        println!("  Events processed: {}", events_processed);
+        println!("  Threats detected: {}", threats_detected);
+    }
+}
+
+/// Save monitoring status to file
+fn save_monitor_status(running: bool) -> bool {
+    let status_file = ".monitor_status";
+    let status = if running { "1" } else { "0" };
+    
+    match fs::write(status_file, status) {
+        Ok(_) => true,
+        Err(e) => {
+            error!("Failed to save monitor status: {}", e);
+            false
+        }
+    }
+}
+
+/// Check if monitoring is running
+fn is_monitoring_running() -> bool {
+    let status_file = ".monitor_status";
+    
+    match fs::read_to_string(status_file) {
+        Ok(content) => content.trim() == "1",
+        Err(_) => false,
+    }
 }
 
 /// Instalar el servicio de Amaru

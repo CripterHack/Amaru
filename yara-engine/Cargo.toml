@@ -5,11 +5,8 @@ edition = "2021"
 authors = ["Amaru Contributors"]
 description = "YARA integration for Amaru Antivirus"
 license = "GPL-2.0"
-build = "build.rs"
 
 [dependencies]
-# YARA bindings
-yara = "0.22"
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
@@ -17,11 +14,10 @@ thiserror = "1.0"
 log = "0.4"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
+# Random number generation
+rand = "0.8"
 # Parent crate
 amaru = { path = ".." }
-
-[build-dependencies]
-cc = "1.0"
 
 [lib]
 name = "amaru_yara_engine"

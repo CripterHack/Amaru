@@ -41,10 +41,10 @@ sha256 = "1.4.0"
 chrono = "0.4.34"
 # Generación de números aleatorios
 rand = "0.8.5"
-# Internal modules - to be uncommented when available
-# yara-engine = { path = "yara-engine" }
-# realtime-monitor = { path = "realtime-monitor" }
-# amaru-radare2-analyzer = { path = "radare2-analyzer" }
+# Internal modules
+amaru-yara-engine = { path = "yara-engine" }
+amaru-realtime-monitor = { path = "realtime-monitor" }
+amaru-radare2-analyzer = { path = "radare2-analyzer" }
 
 [dev-dependencies]
 criterion = "0.5"
