@@ -1,51 +1,39 @@
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    
-    // Check if radare2 is installed
-    let r2_path = find_radare2();
-    if let Some(path) = r2_path {
-        println!("cargo:rustc-env=RADARE2_PATH={}", path.to_string_lossy());
-        println!("cargo:warning=Found radare2 at: {}", path.to_string_lossy());
+
+    // Verificar si r2 está instalado
+    if !is_radare2_installed() {
+        println!("cargo:warning=Radare2 no parece estar instalado. El analizador puede no funcionar correctamente.");
+        println!("cargo:warning=Por favor instale Radare2 desde: https://github.com/radareorg/radare2/releases");
+        
+        // En Windows, podemos sugerir la descarga automática
+        if cfg!(windows) {
+            println!("cargo:warning=En Windows, ejecute: cargo:warning=curl.exe -L -o radare2_installer.exe https://github.com/radareorg/radare2/releases/download/5.8.8/radare2_installer-msvc_64.exe");
+            println!("cargo:warning=Y luego ejecute el instalador descargado.");
+        }
     } else {
-        println!("cargo:warning=radare2 not found. Analysis functionality will be limited.");
+        println!("cargo:warning=Radare2 encontrado correctamente.");
     }
 }
 
-fn find_radare2() -> Option<PathBuf> {
-    // First check environment variable
-    if let Ok(path) = env::var("AMARU_RADARE2_PATH") {
-        let p = PathBuf::from(path).join("r2.exe");
-        if p.exists() {
-            return Some(p);
-        }
+fn is_radare2_installed() -> bool {
+    let check_command = if cfg!(windows) {
+        Command::new("where")
+            .arg("r2")
+            .output()
+    } else {
+        Command::new("which")
+            .arg("r2")
+            .output()
+    };
+
+    match check_command {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
     }
-    
-    // Check PATH
-    if let Ok(output) = Command::new("where").arg("r2").output() {
-        if output.status.success() {
-            if let Ok(path) = String::from_utf8(output.stdout) {
-                let path = path.trim().to_string();
-                return Some(PathBuf::from(path));
-            }
-        }
-    }
-    
-    // Fallback to common locations
-    let common_locations = [
-        r"C:\Program Files\radare2\bin\r2.exe",
-        r"C:\radare2\bin\r2.exe",
-    ];
-    
-    for location in common_locations.iter() {
-        let path = PathBuf::from(location);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    
-    None
 } 

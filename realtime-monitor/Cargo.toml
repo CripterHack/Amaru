@@ -22,10 +22,13 @@ anyhow = "1.0"
 thiserror = "1.0"
 # Logging
 log = "0.4"
-# Parent crate
-amaru = { path = ".." }
+# Path handling
+walkdir = "2.3"
+glob = "0.3"
 # Cross-thread communication
 crossbeam-channel = "0.5"
+# YARA integration
+amaru-yara-engine = { path = "../yara-engine" }
 
 [lib]
 name = "amaru_realtime_monitor"

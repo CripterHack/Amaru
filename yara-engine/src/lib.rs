@@ -7,6 +7,10 @@ use thiserror::Error;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::fs;
+use yara::{Compiler, Rules, ScanFlags};
+use std::convert::TryFrom;
+use walkdir::WalkDir;
+use tokio::task;
 
 /// Errors that can occur during YARA operations
 #[derive(Error, Debug)]
@@ -25,6 +29,9 @@ pub enum YaraError {
     
     #[error("Invalid file path: {0}")]
     InvalidPath(String),
+
+    #[error("YARA error: {0}")]
+    YaraError(#[from] yara::Error),
 }
 
 /// Result of a YARA scan
@@ -71,327 +78,297 @@ impl Default for YaraConfig {
     }
 }
 
-/// Simplified YARA engine that doesn't depend on libyara
-/// This is a placeholder implementation that simulates YARA scanning
+/// YARA engine implementation using the yara crate
 pub struct YaraEngine {
     config: YaraConfig,
-    rules: Vec<Rule>,
-}
-
-#[derive(Debug, Clone)]
-struct Rule {
-    name: String,
-    meta: HashMap<String, String>,
-    tags: Vec<String>,
-    patterns: Vec<Pattern>,
-}
-
-#[derive(Debug, Clone)]
-enum Pattern {
-    Text(String),
-    Hex(Vec<u8>),
-    Regex(String),
-}
-
-/// Create a scan result with a single rule match
-fn create_match(path: PathBuf, rule_name: &str, meta: HashMap<String, String>, pattern: &str, offset: usize) -> ScanResult {
-    let matched_string = MatchedString {
-        id: "$s1".to_string(),
-        offset,
-        data: pattern.as_bytes().to_vec(),
-    };
-    
-    let matched_rule = MatchedRule {
-        name: rule_name.to_string(),
-        meta,
-        tags: Vec::new(),
-        strings: vec![matched_string],
-    };
-    
-    ScanResult {
-        path,
-        matched_rules: vec![matched_rule],
-        scan_time_ms: 10,
-        error: None,
-    }
+    rules: Option<Rules>,
+    rule_count: usize,
 }
 
 impl YaraEngine {
     /// Create a new YARA engine with the given configuration
     pub fn new(config: YaraConfig) -> Result<Self, YaraError> {
-        info!("Initializing simplified YARA engine");
+        info!("Initializing YARA engine");
         let mut engine = YaraEngine {
             config,
-            rules: Vec::new(),
+            rules: None,
+            rule_count: 0,
         };
         
         // Cargar reglas desde los directorios configurados
         engine.load_rules()?;
         
-        info!("Loaded {} rule(s)", engine.rules.len());
+        info!("Loaded {} rule(s)", engine.rule_count);
         Ok(engine)
     }
     
     /// Load rules from the configured rule paths
     fn load_rules(&mut self) -> Result<(), YaraError> {
-        self.rules.clear();
+        let mut compiler = Compiler::new()?;
+        let mut total_rules = 0;
         
-        // Patrones básicos de malware para detección
-        let common_patterns = [
-            "cmd.exe /c", "powershell -e", "rundll32.exe", "regsvr32.exe",
-            "GetProcAddress", "CreateRemoteThread", "VirtualAlloc",
-            "AdjustTokenPrivileges", "WinExec", "ShellExecute",
-            "iexplore.exe -e", "WSASocket", "CreateProcess",
-            "\\AppData\\Roaming\\", "HTTP/1.1", ".onion",
-            "SELECT * FROM", "bitcoin", "ransom", "encrypt",
-            "wallet.dat", "shadow", "password", "Administrator",
-        ];
-        
-        // Crear algunas reglas de ejemplo
-        for (i, pattern) in common_patterns.iter().enumerate() {
-            let mut meta = HashMap::new();
-            meta.insert("description".to_string(), format!("Detects {}", pattern));
-            meta.insert("author".to_string(), "Amaru Team".to_string());
-            
-            // Asignar diferentes niveles de severidad
-            let severity = if i % 3 == 0 {
-                "high"
-            } else if i % 3 == 1 {
-                "medium"
-            } else {
-                "low"
-            };
-            meta.insert("severity".to_string(), severity.to_string());
-            
-            let rule = Rule {
-                name: format!("SIMULATED_RULE_{}", i),
-                meta,
-                tags: vec!["simulated".to_string()],
-                patterns: vec![Pattern::Text(pattern.to_string())],
-            };
-            
-            self.rules.push(rule);
-        }
-        
-        // Intentar cargar reglas reales de los directorios de reglas
         for rule_path in &self.config.rule_paths {
-            if let Err(err) = self.load_rules_from_directory(rule_path) {
-                warn!("Failed to load rules from {:?}: {}", rule_path, err);
+            if rule_path.is_dir() {
+                let rules_loaded = self.load_rules_from_directory(&rule_path, &mut compiler)?;
+                total_rules += rules_loaded;
+            } else if rule_path.is_file() && rule_path.extension().map_or(false, |ext| ext == "yar" || ext == "yara") {
+                self.add_rule_file(&rule_path, &mut compiler)?;
+                total_rules += 1;
             }
         }
         
-        Ok(())
+        if total_rules > 0 {
+            self.rules = Some(compiler.compile_rules()?);
+            self.rule_count = total_rules;
+            Ok(())
+        } else {
+            warn!("No YARA rules found in specified paths");
+            Err(YaraError::CompileError("No rules found".to_string()))
+        }
     }
-    
-    /// Load rules from a directory
-    fn load_rules_from_directory(&mut self, dir: &Path) -> Result<(), YaraError> {
-        if !dir.exists() {
-            debug!("Rule directory does not exist: {:?}", dir);
-            return Ok(());
+
+    /// Load all YARA rules from a directory
+    fn load_rules_from_directory(&self, dir: &Path, compiler: &mut Compiler) -> Result<usize, YaraError> {
+        let mut rules_count = 0;
+        
+        if !dir.exists() || !dir.is_dir() {
+            warn!("Directory does not exist or is not a directory: {:?}", dir);
+            return Ok(0);
         }
         
-        if !dir.is_dir() {
-            return Err(YaraError::InvalidPath(format!("Not a directory: {:?}", dir)));
-        }
-        
-        debug!("Loading rules from directory: {:?}", dir);
-        
-        let entries = fs::read_dir(dir)
-            .map_err(|e| YaraError::IoError(e))?;
-        
-        for entry in entries {
-            let entry = entry.map_err(|e| YaraError::IoError(e))?;
+        for entry in WalkDir::new(dir).follow_links(true).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
             
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "yar" || ext == "yara" {
-                        if let Err(err) = self.parse_rule_file(&path) {
-                            warn!("Failed to parse rule file {:?}: {}", path, err);
-                        }
+            // Solo procesar archivos .yar o .yara
+            if path.is_file() && path.extension().map_or(false, |ext| ext == "yar" || ext == "yara") {
+                match self.add_rule_file(path, compiler) {
+                    Ok(_) => {
+                        debug!("Loaded rule file: {:?}", path);
+                        rules_count += 1;
+                    },
+                    Err(e) => {
+                        warn!("Failed to load rule file {:?}: {}", path, e);
                     }
-                }
-            } else if path.is_dir() {
-                // Recursively load rules from subdirectories
-                if let Err(err) = self.load_rules_from_directory(&path) {
-                    warn!("Failed to load rules from subdirectory {:?}: {}", path, err);
                 }
             }
         }
         
+        info!("Loaded {} rule files from directory {:?}", rules_count, dir);
+        Ok(rules_count)
+    }
+    
+    /// Add a single rule file to the compiler
+    fn add_rule_file(&self, path: &Path, compiler: &mut Compiler) -> Result<(), YaraError> {
+        debug!("Adding rule file: {:?}", path);
+        compiler.add_rules_file(path.to_str().ok_or_else(|| YaraError::InvalidPath(format!("Invalid path: {:?}", path)))?)?;
         Ok(())
     }
     
-    /// Parse a YARA rule file
-    fn parse_rule_file(&mut self, path: &Path) -> Result<(), YaraError> {
-        debug!("Parsing rule file: {:?}", path);
-        
-        let content = fs::read_to_string(path)
-            .map_err(|e| YaraError::IoError(e))?;
-        
-        let mut rule_name = None;
-        let mut meta = HashMap::new();
-        let mut in_meta = false;
-        let mut in_strings = false;
-        let mut patterns = Vec::new();
-        
-        for line in content.lines() {
-            let line = line.trim();
-            
-            if line.is_empty() || line.starts_with("//") {
-                continue;
-            }
-            
-            if in_meta && line.contains("}") {
-                in_meta = false;
-                continue;
-            }
-            
-            if in_strings && line.contains("}") {
-                in_strings = false;
-                continue;
-            }
-            
-            if line.starts_with("rule ") && line.contains("{") {
-                // Parse rule name
-                if let Some(name_end) = line.find('{') {
-                    let name_part = &line[5..name_end].trim();
-                    if !name_part.is_empty() {
-                        rule_name = Some(name_part.to_string());
-                    }
-                }
-                continue;
-            }
-            
-            if line.starts_with("meta:") {
-                in_meta = true;
-                continue;
-            }
-            
-            if line.starts_with("strings:") {
-                in_strings = true;
-                continue;
-            }
-            
-            if in_meta && line.contains("=") {
-                if let Some(pos) = line.find('=') {
-                    let key = line[..pos].trim().to_string();
-                    let value = line[pos + 1..].trim().trim_matches('"').to_string();
-                    meta.insert(key, value);
-                }
-            }
-            
-            if in_strings && line.contains("=") {
-                if let Some(pos) = line.find('=') {
-                    let var_name = line[..pos].trim().to_string();
-                    let value = line[pos + 1..].trim().trim_matches('"').to_string();
-                    patterns.push(Pattern::Text(value));
-                }
-            }
-        }
-        
-        if let Some(name) = rule_name {
-            let rule = Rule {
-                name,
-                meta,
-                tags: vec![],
-                patterns,
-            };
-            self.rules.push(rule);
-        }
-        
-        Ok(())
-    }
-    
-    /// Scan a file with the loaded rules
+    /// Scan a file with YARA rules
     pub fn scan_file(&self, path: &Path) -> Result<Option<ScanResult>, YaraError> {
         if !path.exists() {
             return Err(YaraError::InvalidPath(format!("File does not exist: {:?}", path)));
         }
         
-        if !path.is_file() {
-            return Err(YaraError::InvalidPath(format!("Not a file: {:?}", path)));
-        }
-        
-        debug!("Scanning file: {:?}", path);
-        let start_time = Instant::now();
-        
-        // Leer el contenido del archivo
-        let content = match fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(_) => {
-                // Si no se puede leer como texto, intentar binario
-                match fs::read(path) {
-                    Ok(binary) => {
-                        // Convertir los primeros 1024 bytes a una cadena para buscar patrones
-                        let limit = std::cmp::min(binary.len(), 1024);
-                        String::from_utf8_lossy(&binary[..limit]).to_string()
-                    },
-                    Err(e) => return Err(YaraError::IoError(e)),
-                }
-            }
+        let rules = match &self.rules {
+            Some(rules) => rules,
+            None => return Err(YaraError::InitError("YARA rules not loaded".to_string())),
         };
         
-        // Buscar coincidencias con las reglas
-        for rule in &self.rules {
-            for pattern in &rule.patterns {
-                match pattern {
-                    Pattern::Text(text) => {
-                        if let Some(pos) = content.find(text) {
-                            // Construir el resultado
-                            let mut result_meta = rule.meta.clone();
-                            if !result_meta.contains_key("description") {
-                                result_meta.insert("description".to_string(), format!("Matched pattern: {}", text));
-                            }
-                            
-                            let result = create_match(
-                                path.to_path_buf(),
-                                &rule.name,
-                                result_meta,
-                                text,
-                                pos
-                            );
-                            
-                            return Ok(Some(result));
-                        }
-                    },
-                    _ => {}, // Ignorar otros tipos de patrones por ahora
-                }
-            }
+        let start_time = Instant::now();
+        
+        // Usar el scanner para establecer un timeout
+        let scanner = rules.scanner();
+        let rules_matches = scanner
+            .set_timeout(self.config.timeout_ms)
+            .scan_file(path)?;
+        
+        let elapsed = start_time.elapsed();
+        let scan_time_ms = elapsed.as_millis() as u64;
+        
+        if rules_matches.is_empty() {
+            return Ok(None);
         }
         
-        // Aplicar heurísticas simples para archivos ejecutables
-        if let Some(ext) = path.extension() {
-            if ext == "exe" || ext == "dll" || ext == "sys" {
-                // Pequeña probabilidad de detección para simular comportamiento realista
-                if rand::random::<f32>() < 0.05 {
-                    let mut meta = HashMap::new();
-                    meta.insert("description".to_string(), "Suspicious executable".to_string());
-                    meta.insert("author".to_string(), "Amaru Team".to_string());
-                    meta.insert("severity".to_string(), "medium".to_string());
-                    
-                    let result = create_match(
-                        path.to_path_buf(),
-                        "SUSPICIOUS_EXECUTABLE",
-                        meta,
-                        "suspicious_function",
-                        0
-                    );
-                    
-                    return Ok(Some(result));
-                }
+        // Convertir los resultados al formato de ScanResult
+        let mut matched_rules = Vec::new();
+        for rule_match in rules_matches {
+            let mut meta = HashMap::new();
+            for (key, value) in rule_match.metas {
+                meta.insert(key.to_string(), format!("{:?}", value));
             }
+            
+            let mut strings = Vec::new();
+            for matched_string in rule_match.strings {
+                strings.push(MatchedString {
+                    id: matched_string.identifier.to_string(),
+                    offset: matched_string.offset as usize,
+                    data: matched_string.data.to_vec(),
+                });
+            }
+            
+            matched_rules.push(MatchedRule {
+                name: rule_match.identifier.to_string(),
+                meta,
+                tags: rule_match.tags.iter().map(|t| t.to_string()).collect(),
+                strings,
+            });
         }
         
-        let scan_time = start_time.elapsed().as_millis() as u64;
-        debug!("Scan completed in {} ms", scan_time);
+        let result = ScanResult {
+            path: path.to_path_buf(),
+            matched_rules,
+            scan_time_ms,
+            error: None,
+        };
         
-        // No coincidencias
-        Ok(None)
+        Ok(Some(result))
     }
     
     /// Get the number of loaded rules
     pub fn rule_count(&self) -> usize {
-        self.rules.len()
+        self.rule_count
+    }
+    
+    /// Scan multiple files concurrently
+    pub async fn scan_files_async<P: AsRef<Path> + Send + 'static>(&self, paths: Vec<P>) -> Vec<Result<Option<ScanResult>, YaraError>> {
+        let rules_clone = match &self.rules {
+            Some(rules) => rules.clone(),
+            None => return vec![Err(YaraError::InitError("YARA rules not loaded".to_string()))],
+        };
+        
+        let timeout_ms = self.config.timeout_ms;
+        
+        let mut handles = Vec::new();
+        
+        for path in paths {
+            let rules = rules_clone.clone();
+            
+            let handle = task::spawn_blocking(move || {
+                let path = path.as_ref();
+                
+                if !path.exists() {
+                    return Err(YaraError::InvalidPath(format!("File does not exist: {:?}", path)));
+                }
+                
+                let start_time = Instant::now();
+                
+                let scanner = rules.scanner();
+                let rules_matches = match scanner.set_timeout(timeout_ms).scan_file(path) {
+                    Ok(matches) => matches,
+                    Err(e) => return Err(YaraError::ScanError(format!("Failed to scan file: {}", e))),
+                };
+                
+                let elapsed = start_time.elapsed();
+                let scan_time_ms = elapsed.as_millis() as u64;
+                
+                if rules_matches.is_empty() {
+                    return Ok(None);
+                }
+                
+                // Convertir los resultados al formato de ScanResult
+                let mut matched_rules = Vec::new();
+                for rule_match in rules_matches {
+                    let mut meta = HashMap::new();
+                    for (key, value) in rule_match.metas {
+                        meta.insert(key.to_string(), format!("{:?}", value));
+                    }
+                    
+                    let mut strings = Vec::new();
+                    for matched_string in rule_match.strings {
+                        strings.push(MatchedString {
+                            id: matched_string.identifier.to_string(),
+                            offset: matched_string.offset as usize,
+                            data: matched_string.data.to_vec(),
+                        });
+                    }
+                    
+                    matched_rules.push(MatchedRule {
+                        name: rule_match.identifier.to_string(),
+                        meta,
+                        tags: rule_match.tags.iter().map(|t| t.to_string()).collect(),
+                        strings,
+                    });
+                }
+                
+                let result = ScanResult {
+                    path: path.to_path_buf(),
+                    matched_rules,
+                    scan_time_ms,
+                    error: None,
+                };
+                
+                Ok(Some(result))
+            });
+            
+            handles.push(handle);
+        }
+        
+        let mut results = Vec::new();
+        
+        for handle in handles {
+            match handle.await {
+                Ok(result) => results.push(result),
+                Err(e) => results.push(Err(YaraError::ScanError(format!("Failed to join task: {}", e)))),
+            }
+        }
+        
+        results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_yara_engine_creation() {
+        let config = YaraConfig::default();
+        let result = YaraEngine::new(config);
+        
+        // Este test podría fallar si no hay reglas, pero eso es comportamiento esperado
+        match result {
+            Ok(_) => (),
+            Err(e) => {
+                if let YaraError::CompileError(msg) = e {
+                    if msg == "No rules found" {
+                        // Esto es esperado si no hay reglas
+                    } else {
+                        panic!("Error inesperado: {}", e);
+                    }
+                } else {
+                    panic!("Error inesperado: {}", e);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_add_rule_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        
+        // Escribir una regla simple
+        writeln!(temp_file, r#"rule test_rule {{
+            strings:
+                $a = "test string"
+            condition:
+                $a
+        }}"#).unwrap();
+        
+        // Crear el motor y el compilador
+        let config = YaraConfig::default();
+        let engine = YaraEngine {
+            config,
+            rules: None,
+            rule_count: 0,
+        };
+        
+        let mut compiler = Compiler::new().unwrap();
+        
+        // Intentar agregar la regla
+        let result = engine.add_rule_file(&temp_file.path(), &mut compiler);
+        assert!(result.is_ok());
     }
 } 

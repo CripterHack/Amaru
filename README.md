@@ -24,14 +24,28 @@ Designed for users who value transparency, customization, and Windows 11 compati
 
 ---
 
+## 🚧 Current Development Status
+
+| **Module**              | **Status**            | **Description**                                      |  
+|-------------------------|----------------------|------------------------------------------------------|  
+| YARA Engine             | ✅ Simplified        | Basic implementation without native dependencies      |  
+| Real-Time Monitor       | ✅ Functional        | File system monitoring with event handling           |  
+| Radare2 Analyzer        | ✅ Implemented       | Static analysis with behavior detection              |  
+| CLI Interface           | ✅ Operational       | Command-line tools for all features                  |  
+| Service Management      | ✅ Implemented       | Windows service control functionality                |  
+| Update System           | ✅ Basic             | YARA rules and ClamAV database updates               |  
+| GUI                     | 🔄 Pending           | Graphical interface planned for future release       |  
+
+---
+
 ## ✨ Key Features  
 | **Feature**               | **Technology**          | **Description**                                      |  
 |---------------------------|-------------------------|------------------------------------------------------|  
-| Real-Time File Monitoring | `notify-rs` + ClamAV    | Watches file changes and scans instantly.            |  
-| YARA Rule Engine          | YARA 4.3+               | Detects malware patterns with custom/signed rules.   |  
+| Real-Time File Monitoring | Rust + FileSystem Events| Watches file changes and scans instantly.            |  
+| YARA Rule Engine          | Custom Implementation   | Detects malware patterns with simple rules.          |  
 | Static Analysis           | Radare2                 | Examines PE headers, sections, and suspicious strings.|  
 | Low-Level Performance     | Rust                    | Memory-safe modules for scanning and hooks.          |  
-| Windows 11 Integration    | WinAPI + WFP            | Native kernel-level file filtering.                  |  
+| Windows 11 Integration    | WinAPI + System Services| Native service integration.                          |  
 
 ---
 
@@ -39,9 +53,7 @@ Designed for users who value transparency, customization, and Windows 11 compati
 
 ### Prerequisites  
 - **Rust** (v1.70+): [Install Guide](https://www.rust-lang.org/tools/install)  
-- **YARA** (v4.3+): [Build Instructions](https://yara.readthedocs.io/en/stable/gettingstarted.html)  
 - **Radare2** (Windows build): [Download](https://radare.mikelloc.com/)  
-- **ClamAV Database**: `clamav-update` (included in setup).  
 
 ### Steps  
 1. Clone the repository:  
@@ -50,24 +62,21 @@ Designed for users who value transparency, customization, and Windows 11 compati
    cd Amaru
    ```
 
-2. Install dependencies:  
+2. Install Rust (if not already installed):
    ```powershell
-   # Install Rust crates
-   cargo install --path ./realtime-monitor
-   # Setup YARA rules
-   cp ./yara-rules/malware_rules.yar /etc/amaru/
+   .\rustup-init.exe
    ```
+   - Follow the on-screen instructions
+   - Restart your terminal after installation
 
 3. Build the project:  
    ```bash
-   cargo build --release  # Rust components
-   cmake -B build -DCMAKE_BUILD_TYPE=Release  # C++/ClamWin components
-   cmake --build build --config Release
+   cargo build --release
    ```
 
-4. Start the real-time service:  
-   ```powershell
-   .\target\release\amaru.exe --service start
+4. Install the application:
+   ```bash
+   cargo install --path .
    ```
 
 ---
@@ -75,14 +84,25 @@ Designed for users who value transparency, customization, and Windows 11 compati
 ## 🚀 Usage  
 
 ### Basic Commands  
-| Command                          | Description                          |  
-|----------------------------------|--------------------------------------|  
-| `amaru scan --path C:\`     | Full system scan.                    |  
-| `amaru monitor --start`     | Enable real-time protection.         |  
-| `amaru update --rules`      | Fetch latest YARA/ClamAV signatures. |  
+| Command                                   | Description                                 |  
+|-------------------------------------------|---------------------------------------------|  
+| `amaru scan --path C:\`                   | Scan a directory                            |  
+| `amaru scan --path file.exe --radare2`    | Scan with additional Radare2 analysis       |  
+| `amaru analyze --file suspect.exe`        | Analyze a file with Radare2                 |  
+| `amaru monitor --action start`            | Start real-time monitoring                  |  
+| `amaru monitor --action stop`             | Stop real-time monitoring                   |  
+| `amaru monitor --action status`           | Check monitoring status                     |  
+| `amaru update --rules`                    | Update YARA rules                           |  
+| `amaru update --clamav`                   | Update ClamAV database                      |  
+| `amaru reload --rules`                    | Reload YARA rules                           |  
+| `amaru service --action install`          | Install Amaru as a Windows service          |  
+| `amaru service --action uninstall`        | Uninstall the Windows service               |  
+| `amaru service --action start`            | Start the Windows service                   |  
+| `amaru service --action stop`             | Stop the Windows service                    |  
+| `amaru service --action status`           | Check Windows service status                |  
 
 ### Custom YARA Rules  
-1. Add rules to `/etc/amaru/custom_rules.yar`.  
+1. Add rules to `signatures/custom/your_rule.yar`.  
 2. Reload the engine:  
    ```powershell
    amaru reload --rules
@@ -90,8 +110,8 @@ Designed for users who value transparency, customization, and Windows 11 compati
 
 ### Radare2 Analysis Integration  
 ```bash
-amaru analyze --file suspect.exe --radare2
-# Output: PE sections, imports, and risk score.
+amaru analyze --file suspect.exe
+# Output: PE sections, imports, suspicious strings, risk score, and behaviors.
 ```
 
 ---
@@ -99,12 +119,32 @@ amaru analyze --file suspect.exe --radare2
 ## 📂 Project Structure  
 ```  
 amaru/  
-├── clamwin/           # Modified ClamWin core  
-├── yara-engine/       # YARA-Rust FFI bindings  
-├── realtime-monitor/  # File watcher (Rust)  
+├── clamwin/           # ClamAV database and integration  
+├── yara-engine/       # Simplified YARA implementation  
+├── realtime-monitor/  # File system watcher (Rust)  
 ├── radare2-analyzer/  # Static analysis integration  
-└── signatures/        # YARA/ClamAV rules  
+├── signatures/        # YARA rules directory  
+│   ├── official/      # Built-in/default rules  
+│   └── custom/        # User-defined rules  
+└── src/               # Main application code  
 ```
+
+---
+
+## 📝 Next Steps for Development
+
+### Short-term Goals
+1. **GUI Development**: Create a user-friendly interface
+2. **Enhanced Detection**: Improve YARA rules for better detection rates
+3. **Full YARA Integration**: Integrate with native YARA when available
+4. **Advanced Behavior Analysis**: Expand radare2 analysis capabilities
+5. **Installer Package**: Create an easy-to-use installer
+
+### Medium-term Goals
+1. **Cloud Reputation Checking**: Integration with threat intelligence
+2. **Sandbox Analysis**: Implement behavior-based detection
+3. **Cross-platform Support**: Extend to Linux and macOS
+4. **Plugin System**: Create an extensible architecture
 
 ---
 
@@ -135,11 +175,7 @@ GNU GPLv2. See [LICENSE](LICENSE) for details.
 
 ---
 
-*Disclaimer: Amaru is a community project. It is not endorsed by Cisco Talos or the official ClamAV team.*  
-```
-### 📌 Next Steps  
-1. Customize the `signatures/` section with your YARA rule examples.  
-2. Add a [CODE_OF_CONDUCT.md](https://www.contributor-covenant.org/) if needed.  
-3. Integrate cross Linux/MacOS support
+*Disclaimer: Amaru is a community project. It is not endorsed by Cisco Talos or the official ClamAV team.*
 
-¡Happy coding! 🦀🔍
+### 📌 Next Steps  
+1. Customize the `
