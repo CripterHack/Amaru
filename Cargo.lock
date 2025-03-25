@@ -41,6 +41,9 @@ dependencies = [
 name = "amaru"
 version = "0.1.0"
 dependencies = [
+ "amaru-radare2-analyzer",
+ "amaru-realtime-monitor",
+ "amaru-yara-engine",
  "anyhow",
  "chrono",
  "clap",
@@ -65,12 +68,19 @@ name = "amaru-radare2-analyzer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "lazy_static",
  "log",
+ "md5",
  "pathdiff",
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "subprocess",
  "thiserror 1.0.69",
+ "tokio",
+ "walkdir",
  "winapi",
 ]
 
@@ -78,15 +88,17 @@ dependencies = [
 name = "amaru-realtime-monitor"
 version = "0.1.0"
 dependencies = [
- "amaru",
+ "amaru-yara-engine",
  "anyhow",
  "chrono",
  "crossbeam-channel",
+ "glob",
  "log",
  "notify",
  "notify-debouncer-mini",
  "thiserror 1.0.69",
  "tokio",
+ "walkdir",
  "winapi",
  "windows-service",
 ]
@@ -95,12 +107,13 @@ dependencies = [
 name = "amaru-yara-engine"
 version = "0.1.0"
 dependencies = [
- "amaru",
  "anyhow",
- "cc",
  "log",
+ "rand",
  "serde",
  "thiserror 1.0.69",
+ "tokio",
+ "walkdir",
  "yara",
 ]
 
@@ -221,9 +234,9 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "bindgen"
-version = "0.68.1"
+version = "0.66.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "726e4313eb6ec35d2730258ad4e15b547ee75d6afaa1361a922e78e59b7d8078"
+checksum = "f2b84e06fc203107bfbad243f4aba2af864eb7db3b1cf46ea0a023b0b433d2a7"
 dependencies = [
  "bitflags 2.9.0",
  "cexpr",
@@ -1943,9 +1956,9 @@ dependencies = [
 
 [[package]]
 name = "yara"
-version = "0.22.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c14f69eb9179c26665a487e1f1d1f3be57eb89eadb018df15a373a1d35402b9"
+checksum = "7ac0de3e344eb6a5b3db94ec51c0f1467d6a64e49f7ab6c862a64e0c4a5ee904"
 dependencies = [
  "bitflags 2.9.0",
  "lazy_static",
@@ -1955,9 +1968,9 @@ dependencies = [
 
 [[package]]
 name = "yara-sys"
-version = "0.22.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a008551ff702ebde96b7547239f8930518ef8ff82f94cf317460d95851e3ec72"
+checksum = "9c9b8f09f4221f2d5271b26a5811edf7e62c794f1a5ea546ce9238232521d933"
 dependencies = [
  "bindgen",
 ]

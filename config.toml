@@ -1,0 +1,10 @@
+[behavior_analyzer]
+max_cache_size = 1000
+cache_ttl_seconds = 3600
+parallel_threads = 4
+min_confidence = 75
+
+[performance]
+use_mimalloc = true
+compress_yara_rules = true
+max_threads = 4 
