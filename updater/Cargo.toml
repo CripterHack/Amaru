@@ -1,0 +1,26 @@
+[package]
+name = "amaru-updater"
+version = "0.1.0"
+edition = "2021"
+authors = ["CripterHack"]
+description = "Sistema de actualizaciones para Amaru Antivirus"
+license = "GPL-2.0"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+ed25519-dalek = "2.1"
+sha2 = "0.10"
+log = "0.4"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio-test = "0.4"
+
+[[bin]]
+name = "sign-update"
+path = "src/bin/sign-update.rs" 
