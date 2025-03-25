@@ -1,181 +1,201 @@
+# Amaru: Next Generation Antivirus 🛡️
+
 <p align="center">
-  <img src="Amaru-logo.svg" alt="Aproxima Logo" width="512" height="512"/>
+  <img src="amaru-app.png" alt="Amaru Logo" width="512" height="512"/>
 </p>
 
-# Amaru: Next Generation Antivirus 🛡️  
+Origin: Mythological Inca serpent that guards treasures.  
+Analogy: Coils around and neutralizes threats.
 
-Origin: Mythological Inca serpent that guards treasures.
-Analogy: Coils and neutralizes threats.
+**Open-source antivirus for Windows 11 with real-time scanning, YARA rules, Radare2 integration, and Rust-powered efficiency.**
 
-**Open-source antivirus for Windows 11 with real-time scanning, YARA rules, Radare2 integration, and Rust-powered efficiency.**  
-
-[![License: GPL v2](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)  
-![Windows 11 Support](https://img.shields.io/badge/Windows-11-0078D4?logo=windows)  
-
----
-
-## 📖 Overview  
-Amaru is a community-driven fork of ClamWin, supercharged with modern malware detection capabilities:  
-- **Real-time protection** via Rust-native file monitoring.  
-- **Heuristic analysis** using YARA rules and Radare2 static analysis.  
-- **Low resource consumption** thanks to Rust-optimized modules.  
-
-Designed for users who value transparency, customization, and Windows 11 compatibility.  
+[![License: GPL v2](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+![Windows 11 Support](https://img.shields.io/badge/Windows-11-0078D4?logo=windows)
+![Build Status](https://img.shields.io/github/workflow/status/CripterHack/Amaru/CI)
+![Version](https://img.shields.io/github/v/release/CripterHack/Amaru)
 
 ---
 
-## 🚧 Current Development Status
+## 📖 Overview
+Amaru is a community-driven fork of ClamWin, supercharged with modern malware detection capabilities:
+- **Real-time protection** via Rust-native file monitoring
+- **Heuristic analysis** using YARA rules and Radare2 static analysis
+- **Low resource consumption** thanks to Rust-optimized modules
+- **Modern UI** built with Tauri + Svelte + TailwindCSS
 
-| **Module**              | **Status**            | **Description**                                      |  
-|-------------------------|----------------------|------------------------------------------------------|  
-| YARA Engine             | ✅ Simplified        | Basic implementation without native dependencies      |  
-| Real-Time Monitor       | ✅ Functional        | File system monitoring with event handling           |  
-| Radare2 Analyzer        | ✅ Implemented       | Static analysis with behavior detection              |  
-| CLI Interface           | ✅ Operational       | Command-line tools for all features                  |  
-| Service Management      | ✅ Implemented       | Windows service control functionality                |  
-| Update System           | ✅ Basic             | YARA rules and ClamAV database updates               |  
-| GUI                     | 🔄 Pending           | Graphical interface planned for future release       |  
+Designed for users who value transparency, customization, and Windows 11 compatibility.
 
 ---
 
-## ✨ Key Features  
-| **Feature**               | **Technology**          | **Description**                                      |  
-|---------------------------|-------------------------|------------------------------------------------------|  
-| Real-Time File Monitoring | Rust + FileSystem Events| Watches file changes and scans instantly.            |  
-| YARA Rule Engine          | Custom Implementation   | Detects malware patterns with simple rules.          |  
-| Static Analysis           | Radare2                 | Examines PE headers, sections, and suspicious strings.|  
-| Low-Level Performance     | Rust                    | Memory-safe modules for scanning and hooks.          |  
-| Windows 11 Integration    | WinAPI + System Services| Native service integration.                          |  
+## ✨ Key Features
+| **Feature**               | **Technology**          | **Description**                                      |
+|--------------------------|-------------------------|---------------------------------------------------|
+| Real-Time File Monitoring | `notify-rs` + ClamAV    | Watches file changes and scans instantly            |
+| YARA Rule Engine         | YARA 4.3+              | Detects malware patterns with custom/signed rules   |
+| Static Analysis          | Radare2                | Examines PE headers, sections, and suspicious strings|
+| Low-Level Performance    | Rust                   | Memory-safe modules for scanning and hooks          |
+| Windows 11 Integration   | WinAPI + WFP           | Native kernel-level file filtering                 |
+| Modern UI               | Tauri + Svelte         | Responsive and efficient user interface            |
 
 ---
 
-## 🛠️ Installation  
+## 🛠️ System Requirements
+- Windows 11 (64-bit)
+- 4GB RAM minimum (8GB recommended)
+- 1GB free disk space
+- Admin privileges for real-time protection
 
-### Prerequisites  
-- **Rust** (v1.70+): [Install Guide](https://www.rust-lang.org/tools/install)  
-- **Radare2** (Windows build): [Download](https://radare.mikelloc.com/)  
+## 📥 Installation
 
-### Steps  
-1. Clone the repository:  
+### Prerequisites
+1. **Install Rust:**
+   ```powershell
+   winget install Rustlang.Rust.MSVC
+   rustup toolchain install nightly
+   rustup default nightly
+   ```
+
+2. **Install Dependencies:**
+   ```powershell
+   # Install Radare2
+   winget install radare.radare2
+   
+   # Install YARA (4.3+)
+   # Download from https://github.com/VirusTotal/yara/releases
+   
+   # For UI development
+   winget install OpenJS.NodeJS.LTS
+   ```
+
+### Build Steps
+1. **Clone and Build:**
    ```bash
    git clone https://github.com/CripterHack/Amaru.git
    cd Amaru
-   ```
-
-2. Install Rust (if not already installed):
-   ```powershell
-   .\rustup-init.exe
-   ```
-   - Follow the on-screen instructions
-   - Restart your terminal after installation
-
-3. Build the project:  
-   ```bash
+   
+   # Build backend
    cargo build --release
+   
+   # Build GUI
+   cd gui
+   npm install
+   npm run build
    ```
 
-4. Install the application:
+2. **Configure:**
    ```bash
-   cargo install --path .
+   copy .env.example .env
+   # Edit .env with your settings
    ```
 
 ---
 
-## 🚀 Usage  
+## 🚀 Usage
 
-### Basic Commands  
-| Command                                   | Description                                 |  
-|-------------------------------------------|---------------------------------------------|  
-| `amaru scan --path C:\`                   | Scan a directory                            |  
-| `amaru scan --path file.exe --radare2`    | Scan with additional Radare2 analysis       |  
-| `amaru analyze --file suspect.exe`        | Analyze a file with Radare2                 |  
-| `amaru monitor --action start`            | Start real-time monitoring                  |  
-| `amaru monitor --action stop`             | Stop real-time monitoring                   |  
-| `amaru monitor --action status`           | Check monitoring status                     |  
-| `amaru update --rules`                    | Update YARA rules                           |  
-| `amaru update --clamav`                   | Update ClamAV database                      |  
-| `amaru reload --rules`                    | Reload YARA rules                           |  
-| `amaru service --action install`          | Install Amaru as a Windows service          |  
-| `amaru service --action uninstall`        | Uninstall the Windows service               |  
-| `amaru service --action start`            | Start the Windows service                   |  
-| `amaru service --action stop`             | Stop the Windows service                    |  
-| `amaru service --action status`           | Check Windows service status                |  
-
-### Custom YARA Rules  
-1. Add rules to `signatures/custom/your_rule.yar`.  
-2. Reload the engine:  
-   ```powershell
-   amaru reload --rules
-   ```
-
-### Radare2 Analysis Integration  
+### Basic Commands
 ```bash
-amaru analyze --file suspect.exe
-# Output: PE sections, imports, suspicious strings, risk score, and behaviors.
+# On-demand scan
+amaru scan <path>
+
+# Enable real-time protection
+amaru protect --enable
+
+# Update YARA rules
+amaru update-rules
+
+# Launch GUI
+amaru gui
 ```
 
+### Security Features
+- **Real-time Protection:**
+  - Kernel-level file system monitoring
+  - Process behavior analysis
+  - Network traffic inspection (WFP integration)
+
+- **Scanning Capabilities:**
+  - YARA pattern matching
+  - PE file analysis with Radare2
+  - Memory scanning
+  - Rootkit detection
+
+- **Update System:**
+  - Automatic signature updates
+  - Ed25519 cryptographic verification
+  - Rollback capability
+  - Delta updates for efficiency
+
 ---
 
-## 📂 Project Structure  
-```  
-amaru/  
-├── clamwin/           # ClamAV database and integration  
-├── yara-engine/       # Simplified YARA implementation  
-├── realtime-monitor/  # File system watcher (Rust)  
-├── radare2-analyzer/  # Static analysis integration  
-├── signatures/        # YARA rules directory  
-│   ├── official/      # Built-in/default rules  
-│   └── custom/        # User-defined rules  
-└── src/               # Main application code  
+## 📂 Project Structure
+```
+amaru/
+├── src/                 # Core Rust implementation
+├── gui/                 # Tauri + Svelte frontend
+├── yara-engine/        # YARA integration
+├── radare2-analyzer/   # Static analysis tools
+├── realtime-monitor/   # File system monitor
+├── updater/           # Update system
+├── signatures/        # YARA rules
+├── installer/         # Windows installer
+└── docs/             # Documentation
 ```
 
----
+## 🔧 Development
 
-## 📝 Next Steps for Development
+### Setup Development Environment
+```bash
+# Install dev tools
+cargo install cargo-watch cargo-audit
 
-### Short-term Goals
-1. **GUI Development**: Create a user-friendly interface
-2. **Enhanced Detection**: Improve YARA rules for better detection rates
-3. **Full YARA Integration**: Integrate with native YARA when available
-4. **Advanced Behavior Analysis**: Expand radare2 analysis capabilities
-5. **Installer Package**: Create an easy-to-use installer
+# Run tests
+cargo test --all
 
-### Medium-term Goals
-1. **Cloud Reputation Checking**: Integration with threat intelligence
-2. **Sandbox Analysis**: Implement behavior-based detection
-3. **Cross-platform Support**: Extend to Linux and macOS
-4. **Plugin System**: Create an extensible architecture
+# Development mode
+cd gui
+npm run dev
+```
 
----
-
-## 🤝 Contributing  
-We welcome PRs! Follow these steps:  
-1. Fork the repository.  
-2. Create a feature branch: `git checkout -b feat/your-feature`.  
-3. Adhere to the [Rust Coding Style](https://github.com/rust-lang/rfcs/blob/master/style-guide/README.md).  
-4. Submit a PR with tests and documentation.  
-
-### Funding  
-Support us via:  
-- [GitHub Sponsors](https://github.com/sponsors/CripterHack)  
-- [Open Collective](https://opencollective.com/Amaru)  
+### Security Considerations
+- All updates are cryptographically signed
+- Privilege separation for different components
+- Memory-safe implementation in Rust
+- Regular security audits
+- CVE monitoring and rapid response
 
 ---
 
-## 📜 License  
-GNU GPLv2. See [LICENSE](LICENSE) for details.  
+## 🤝 Contributing
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+### Code Style
+- Follow Rust style guidelines
+- Use clippy for linting
+- Document public APIs
+- Include tests for new features
 
 ---
 
-## 🙌 Acknowledgments  
-- Original [ClamWin](https://github.com/clamwin/clamwin) Team.  
-- VirusTotal for [YARA](https://github.com/VirusTotal/yara).  
-- Radare2 community for the reverse-engineering framework.  
-- Rust contributors for memory-safe systems programming.  
+## 📜 License
+This project is licensed under the GNU General Public License v2.0 - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+- [ClamWin](http://www.clamwin.com/) - Original project
+- [YARA](https://virustotal.github.io/yara/) - Pattern matching engine
+- [Radare2](https://rada.re/n/) - Reverse engineering framework
+- [Tauri](https://tauri.app/) - GUI framework
+- [Svelte](https://svelte.dev/) - UI library
+- [TailwindCSS](https://tailwindcss.com/) - Styling system
+
+## 💬 Support
+- [Open an issue](https://github.com/CripterHack/Amaru/issues)
+- [Documentation](https://amaru.readthedocs.io/)
+- [Community Forum](https://forum.amaru.dev)
 
 ---
 
-*Disclaimer: Amaru is a community project. It is not endorsed by Cisco Talos or the official ClamAV team.*
-
-### 📌 Next Steps  
-1. Customize the `
+*Disclaimer: Amaru is a community project and is not affiliated with or endorsed by ClamAV or Cisco Talos.*
