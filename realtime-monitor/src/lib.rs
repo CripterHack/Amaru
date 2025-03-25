@@ -7,6 +7,10 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
+use serde::{Serialize, Deserialize};
+use tokio::sync::mpsc;
+use dashmap::DashMap;
+use regex;
 
 /// Errors that can occur during real-time monitoring
 #[derive(Error, Debug)]
@@ -36,22 +40,21 @@ pub enum MonitorState {
 }
 
 /// File event representing a file change
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEvent {
     pub path: PathBuf,
-    pub event_type: EventType,
+    pub event_type: FileEventType,
     pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub process_info: Option<ProcessInfo>,
 }
 
 /// Type of file event
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EventType {
-    Create,
-    Modify,
-    Delete,
-    Rename(Option<PathBuf>), // The "to" path for renames
-    Access,
-    Other,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FileEventType {
+    Created,
+    Modified,
+    Deleted,
+    Renamed(PathBuf), // Nueva ubicación en caso de renombrado
 }
 
 /// Action to take after processing a file event
@@ -101,6 +104,9 @@ pub struct RealTimeMonitor {
     event_sender: Sender<FileEvent>,
     event_receiver: Receiver<FileEvent>,
     stats: Arc<Mutex<MonitorStats>>,
+    watcher: RecommendedWatcher,
+    watched_paths: Arc<DashMap<PathBuf, RecursiveMode>>,
+    filters: Arc<Filters>,
 }
 
 /// Statistics for the monitor
@@ -110,6 +116,22 @@ pub struct MonitorStats {
     pub events_processed: usize,
     pub threats_detected: usize,
     pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub path: PathBuf,
+    pub command_line: String,
+}
+
+#[derive(Debug, Clone)]
+struct Filters {
+    exclude_paths: Vec<PathBuf>,
+    exclude_patterns: Vec<regex::Regex>,
+    include_extensions: Vec<String>,
+    max_file_size: u64,
 }
 
 impl RealTimeMonitor {
@@ -129,12 +151,42 @@ impl RealTimeMonitor {
             }
         }
         
+        let (event_tx, event_rx) = mpsc::channel(1000);
+        let watched_paths = Arc::new(DashMap::new());
+        let watched_paths_clone = Arc::clone(&watched_paths);
+
+        let filters = Arc::new(Filters {
+            exclude_paths: Vec::new(),
+            exclude_patterns: Vec::new(),
+            include_extensions: vec!["exe".to_string(), "dll".to_string(), "sys".to_string()],
+            max_file_size: 100 * 1024 * 1024, // 100MB por defecto
+        });
+
+        let filters_clone = Arc::clone(&filters);
+        let event_tx_clone = event_tx.clone();
+
+        let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            match res {
+                Ok(event) => {
+                    if let Some(file_event) = process_event(event, &filters_clone) {
+                        if let Err(e) = event_tx_clone.send(file_event) {
+                            error!("Error enviando evento: {}", e);
+                        }
+                    }
+                }
+                Err(e) => error!("Error de monitoreo: {}", e),
+            }
+        })?;
+
         Ok(Self {
             state: Arc::new(Mutex::new(MonitorState::Stopped)),
             config,
             event_sender: sender,
             event_receiver: receiver,
             stats: Arc::new(Mutex::new(MonitorStats::default())),
+            watcher,
+            watched_paths: watched_paths_clone,
+            filters,
         })
     }
     
@@ -169,10 +221,8 @@ impl RealTimeMonitor {
         // Add paths to watch
         for path in &self.config.paths {
             info!("Watching path: {}", path.display());
-            debouncer
-                .watcher()
-                .watch(path, RecursiveMode::Recursive)
-                .map_err(|e| MonitorError::WatchPathError(e.to_string()))?;
+            self.watcher.watch(path, RecursiveMode::Recursive)?;
+            self.watched_paths.insert(path.clone(), RecursiveMode::Recursive);
         }
         
         // Create clones for the watcher thread
@@ -207,6 +257,7 @@ impl RealTimeMonitor {
                                     path: event.path,
                                     event_type,
                                     timestamp: chrono::Utc::now(),
+                                    process_info: None,
                                 };
                                 
                                 if let Err(e) = event_sender.send(file_event) {
@@ -367,6 +418,9 @@ impl RealTimeMonitor {
             warn!("Added new watch path, but monitoring needs to be restarted for it to take effect");
         }
         
+        self.watcher.watch(&path, RecursiveMode::Recursive)?;
+        self.watched_paths.insert(path, RecursiveMode::Recursive);
+        
         Ok(())
     }
     
@@ -379,8 +433,115 @@ impl RealTimeMonitor {
             warn!("Removed watch path, but monitoring needs to be restarted for it to take effect");
         }
         
+        self.watcher.unwatch(path)?;
+        self.watched_paths.remove(path);
+        
         Ok(())
     }
+}
+
+fn process_event(event: Event, filters: &Filters) -> Option<FileEvent> {
+    let paths: Vec<_> = event.paths.iter().collect();
+    if paths.is_empty() {
+        return None;
+    }
+
+    let path = paths[0];
+
+    // Verificar exclusiones
+    if filters.exclude_paths.iter().any(|p| path.starts_with(p)) {
+        return None;
+    }
+
+    if filters.exclude_patterns.iter().any(|r| r.is_match(&path.to_string_lossy())) {
+        return None;
+    }
+
+    // Verificar extensión
+    if let Some(ext) = path.extension() {
+        if !filters.include_extensions.iter().any(|e| e == &ext.to_string_lossy()) {
+            return None;
+        }
+    } else {
+        return None;
+    }
+
+    // Verificar tamaño
+    if let Ok(metadata) = std::fs::metadata(path) {
+        if metadata.len() > filters.max_file_size {
+            return None;
+        }
+    }
+
+    let event_type = match event.kind {
+        notify::EventKind::Create(_) => FileEventType::Created,
+        notify::EventKind::Modify(_) => FileEventType::Modified,
+        notify::EventKind::Remove(_) => FileEventType::Deleted,
+        notify::EventKind::Rename(_, _) => {
+            if paths.len() > 1 {
+                FileEventType::Renamed(paths[1].to_path_buf())
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+
+    let process_info = get_process_info(path);
+
+    Some(FileEvent {
+        path: path.to_path_buf(),
+        event_type,
+        timestamp: chrono::Utc::now(),
+        process_info,
+    })
+}
+
+#[cfg(windows)]
+fn get_process_info(path: &Path) -> Option<ProcessInfo> {
+    use windows::Win32::System::ProcessStatus::{K32EnumProcesses, K32GetModuleFileNameExW};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+    
+    let mut processes = [0u32; 1024];
+    let mut needed = 0;
+    
+    unsafe {
+        if !K32EnumProcesses(
+            processes.as_mut_ptr(),
+            (processes.len() * std::mem::size_of::<u32>()) as u32,
+            &mut needed,
+        ).as_bool() {
+            return None;
+        }
+    }
+
+    let count = needed as usize / std::mem::size_of::<u32>();
+    
+    for &pid in &processes[..count] {
+        unsafe {
+            if let Ok(handle) = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) {
+                let mut path_buf = [0u16; 260];
+                if K32GetModuleFileNameExW(handle, None, &mut path_buf).0 > 0 {
+                    let path_str = String::from_utf16_lossy(&path_buf[..]);
+                    if path_str.contains(path.to_string_lossy().as_ref()) {
+                        return Some(ProcessInfo {
+                            pid,
+                            name: path.file_name()?.to_string_lossy().into_owned(),
+                            path: PathBuf::from(path_str.trim_matches('\0')),
+                            command_line: String::new(), // TODO: Implementar obtención de command line
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+#[cfg(not(windows))]
+fn get_process_info(_path: &Path) -> Option<ProcessInfo> {
+    None
 }
 
 #[cfg(test)]
