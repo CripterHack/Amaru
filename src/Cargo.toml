@@ -1,0 +1,86 @@
+[package]
+name = "amaru"
+version = "1.0.0"
+edition = "2021"
+authors = ["Amaru Security Team"]
+description = "Antivirus moderno con análisis heurístico avanzado"
+license = "GPL-2.0"
+
+[dependencies]
+# Dependencias core
+tokio = { version = "1.29.1", features = ["full"] }
+log = "0.4.20"
+serde = { version = "1.0.188", features = ["derive"] }
+serde_json = "1.0.105"
+thiserror = "1.0.47"
+chrono = { version = "0.4.28", features = ["serde"] }
+dashmap = "5.5.3"
+rayon = "1.8.0"
+crossbeam-channel = "0.5.8"
+num_cpus = "1.16.0"
+
+# Optimización de recursos
+mimalloc = { version = "0.1.39", default-features = false }
+sysinfo = "0.29.10"
+futures = "0.3.28"
+parking_lot = "0.12.1"
+futures-locks = "0.7.1"
+static_assertions = "1.1.0"
+
+# Monitoreo y análisis
+amaru-yara-engine = { path = "yara-engine", version = "0.1.0" }
+amaru-realtime-monitor = { path = "realtime-monitor", version = "0.1.0" }
+radare2-analyzer = { path = "radare2-analyzer", version = "0.1.0" }
+amaru-updater = { path = "updater", version = "0.1.0" }
+
+# Seguridad
+sha2 = "0.10.8"
+hmac = "0.12.1"
+aes-gcm = "0.10.3"
+base64 = "0.21.7"
+rand = "0.8.5"
+csv = "1.3.0"
+
+# IPC y comunicación
+named_pipe = "0.4.1"
+windows-service = "0.5.0"
+
+# UI
+env_logger = "0.10.0"
+time = "0.3.30"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3.9", features = ["wintrust", "wincrypt", "softpub", "guiddef", "processthreadsapi", "winbase"] }
+
+[features]
+default = ["optimize_memory", "profile_allocation"]
+optimize_memory = ["mimalloc/secure"]
+profile_allocation = []
+low_power = []
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = true
+debug = false
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.bench]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[profile.production]
+inherits = "release"
+debug = false
+strip = "symbols"
+overflow-checks = false
+codegen-units = 1
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"] 
