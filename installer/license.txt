@@ -1,0 +1,13 @@
+﻿GNU GENERAL PUBLIC LICENSE
+Version 2, June 1991
+
+Copyright (C) 2024 Amaru Security Team
+
+Este programa es software libre; puede redistribuirlo y/o modificarlo
+bajo los tÃƒÂ©rminos de la Licencia PÃƒÂºblica General GNU publicada por
+la Free Software Foundation; ya sea la versiÃƒÂ³n 2 de la Licencia, o
+(a su elecciÃƒÂ³n) cualquier versiÃƒÂ³n posterior.
+
+Este programa se distribuye con la esperanza de que sea ÃƒÂºtil,
+pero SIN NINGUNA GARANTÃƒÂA; sin siquiera la garantÃƒÂ­a implÃƒÂ­cita de
+COMERCIABILIDAD o IDONEIDAD PARA UN PROPÃƒâ€œSITO PARTICULAR.

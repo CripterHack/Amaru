@@ -1,0 +1,62 @@
+{
+  "modules": {
+    "yara-engine": {
+      "version": "1.0.0",
+      "description": "Motor de reglas YARA para detección basada en patrones",
+      "dependencies": [
+        "yara-x64.dll",
+        "libyara.dll"
+      ],
+      "source_path": "yara-engine",
+      "install_path": "modules/yara-engine",
+      "data_paths": [
+        "signatures/official",
+        "signatures/custom"
+      ]
+    },
+    "radare2-analyzer": {
+      "version": "1.0.0",
+      "description": "Analizador estático con Radare2 para inspección de binarios",
+      "dependencies": [
+        "radare2-x64.dll",
+        "r_core.dll"
+      ],
+      "source_path": "radare2-analyzer",
+      "install_path": "modules/radare2-analyzer",
+      "data_paths": []
+    },
+    "realtime-monitor": {
+      "version": "1.0.0",
+      "description": "Monitor en tiempo real para protección continua del sistema",
+      "dependencies": [],
+      "source_path": "realtime-monitor",
+      "install_path": "modules/realtime-monitor",
+      "data_paths": []
+    },
+    "heuristic-analyzer": {
+      "version": "1.0.0",
+      "description": "Analizador heurístico para detección avanzada de amenazas",
+      "dependencies": [],
+      "source_path": "yara-engine/src/heuristic.rs",
+      "install_path": "modules/yara-engine",
+      "data_paths": []
+    }
+  },
+  "paths": {
+    "config": "config.toml",
+    "logs": "logs",
+    "quarantine": "quarantine",
+    "signatures": "signatures",
+    "temp": "temp",
+    "service": "service"
+  },
+  "environment_variables": {
+    "AMARU_ROOT": "%INSTALLDIR%",
+    "YARA_RULES_PATH": "%INSTALLDIR%\\signatures",
+    "QUARANTINE_PATH": "%INSTALLDIR%\\quarantine",
+    "LOGS_PATH": "%INSTALLDIR%\\logs",
+    "ENABLE_REALTIME_PROTECTION": "true",
+    "ENABLE_HEURISTIC_ANALYSIS": "true",
+    "LOW_RESOURCE_MODE": "false"
+  }
+} 

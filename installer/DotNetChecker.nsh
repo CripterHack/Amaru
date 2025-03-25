@@ -1,0 +1,1 @@
+; Archivo DotNetChecker.nsh vacÃ­o
