@@ -189,19 +189,33 @@ Section "MainSection" SEC01
   CreateDirectory "$INSTDIR\modules\yara-engine"
   CreateDirectory "$INSTDIR\modules\radare2-analyzer"
   CreateDirectory "$INSTDIR\modules\realtime-monitor"
+  CreateDirectory "$INSTDIR\modules\clamav"
   CreateDirectory "$INSTDIR\signatures"
   CreateDirectory "$INSTDIR\signatures\custom"
   CreateDirectory "$INSTDIR\signatures\official"
   CreateDirectory "$INSTDIR\logs"
   CreateDirectory "$INSTDIR\quarantine"
+  CreateDirectory "$INSTDIR\temp"
   
-  ; Copiar archivos DLL y dependencias críticas para cada módulo
-  ${If} ${FileExists} "${EXEDIR}\dist\x64\yara-x64.dll"
-    File /oname=$INSTDIR\modules\yara-engine\yara-x64.dll "${EXEDIR}\dist\x64\yara-x64.dll"
+  ; Crear directorios comunes en ProgramData para archivos compartidos
+  CreateDirectory "$PROGRAMDATA\Amaru"
+  CreateDirectory "$PROGRAMDATA\Amaru\rules"
+  CreateDirectory "$PROGRAMDATA\Amaru\db"
+  
+  ; Copiar archivos DLL y dependencias críticas
+  ; YARA Engine
+  ${If} ${FileExists} "${EXEDIR}\dist\yara\x64\libyara.dll"
+    File /oname=$INSTDIR\modules\yara-engine\libyara.dll "${EXEDIR}\dist\yara\x64\libyara.dll"
   ${EndIf}
   
-  ${If} ${FileExists} "${EXEDIR}\dist\x64\radare2-x64.dll"
-    File /oname=$INSTDIR\modules\radare2-analyzer\radare2-x64.dll "${EXEDIR}\dist\x64\radare2-x64.dll"
+  ; Radare2
+  ${If} ${FileExists} "${EXEDIR}\dist\radare2\x64\*.dll"
+    File /oname=$INSTDIR\modules\radare2-analyzer\*.dll "${EXEDIR}\dist\radare2\x64\*.dll"
+  ${EndIf}
+  
+  ; ClamAV/ClamWin
+  ${If} ${FileExists} "${EXEDIR}\dist\clamav\x64\*.dll"
+    File /oname=$INSTDIR\modules\clamav\*.dll "${EXEDIR}\dist\clamav\x64\*.dll"
   ${EndIf}
   
   ; Copiar archivos de configuración
@@ -210,17 +224,40 @@ Section "MainSection" SEC01
   ${EndIf}
   
   ; Copiar reglas YARA
-  ${If} ${FileExists} "${EXEDIR}\signatures\*.yar"
-    File /oname=$INSTDIR\signatures\official\*.yar "${EXEDIR}\signatures\*.yar"
+  ${If} ${FileExists} "${EXEDIR}\signatures\official\*.yar"
+    File /oname=$INSTDIR\signatures\official\*.yar "${EXEDIR}\signatures\official\*.yar"
+    ; También copiar a ProgramData para compatibilidad con rutas anteriores
+    CopyFiles "$INSTDIR\signatures\official\*.yar" "$PROGRAMDATA\Amaru\rules\"
   ${EndIf}
   
-  ; Crear archivo .env con rutas correctas
+  ; Copiar base de datos ClamAV si existe
+  ${If} ${FileExists} "${EXEDIR}\dist\clamav\db\*.cvd"
+    File /oname=$INSTDIR\modules\clamav\db\*.cvd "${EXEDIR}\dist\clamav\db\*.cvd"
+    ; También copiar a ProgramData
+    CopyFiles "$INSTDIR\modules\clamav\db\*.cvd" "$PROGRAMDATA\Amaru\db\"
+  ${EndIf}
+  
+  ; Crear archivo .env con rutas correctas en Windows
   FileOpen $0 "$INSTDIR\.env" w
   FileWrite $0 "# Configuración generada por el instalador$\r$\n"
+  FileWrite $0 "# Paths$\r$\n"
   FileWrite $0 "AMARU_ROOT=$INSTDIR$\r$\n"
-  FileWrite $0 "YARA_RULES_PATH=$INSTDIR\signatures$\r$\n"
-  FileWrite $0 "QUARANTINE_PATH=$INSTDIR\quarantine$\r$\n"
-  FileWrite $0 "LOGS_PATH=$INSTDIR\logs$\r$\n"
+  FileWrite $0 "AMARU_YARA_RULES_PATH=$INSTDIR\signatures$\r$\n"
+  FileWrite $0 "AMARU_CUSTOM_RULES_PATH=$INSTDIR\signatures\custom$\r$\n"
+  FileWrite $0 "AMARU_OFFICIAL_RULES_PATH=$INSTDIR\signatures\official$\r$\n"
+  FileWrite $0 "AMARU_TEMP_PATH=$INSTDIR\temp$\r$\n"
+  FileWrite $0 "AMARU_RADARE2_PATH=$INSTDIR\modules\radare2-analyzer$\r$\n"
+  FileWrite $0 "$\r$\n# Compatibilidad con rutas antiguas$\r$\n"
+  FileWrite $0 "CLAMWIN_NG_YARA_RULES_PATH=$PROGRAMDATA\Amaru\rules$\r$\n"
+  FileWrite $0 "$\r$\n# Performance$\r$\n"
+  FileWrite $0 "AMARU_MAX_THREADS=4$\r$\n"
+  FileWrite $0 "AMARU_SCAN_MEMORY_LIMIT=512$\r$\n"
+  FileWrite $0 "AMARU_FAST_SCAN=true$\r$\n"
+  FileWrite $0 "$\r$\n# Logging$\r$\n"
+  FileWrite $0 "RUST_LOG=info,amaru=debug$\r$\n"
+  FileWrite $0 "AMARU_LOG_FILE=$INSTDIR\logs\amaru.log$\r$\n"
+  FileWrite $0 "$\r$\n# Integration$\r$\n"
+  FileWrite $0 "AMARU_CLAMAV_DB_PATH=$INSTDIR\modules\clamav\db$\r$\n"
   ${If} ${RunningX64}
     FileWrite $0 "SYSTEM_ARCH=x64$\r$\n"
   ${Else}

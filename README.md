@@ -4,6 +4,8 @@
   <img src="amaru-app.png" alt="Amaru Logo" width="512" height="512"/>
 </p>
 
+> ⚠️ **Warning**: By now this is an experimental, in-progress version of Amaru Antivirus. It is currently under active development and should not be used in production environments. Features may be incomplete, unstable or subject to significant changes. Use at your own risk.
+
 Origin: Mythological Inca serpent that guards treasures.  
 Analogy: Coils around and neutralizes threats.
 
@@ -40,14 +42,42 @@ Designed for users who value transparency, customization, and Windows 11 compati
 ---
 
 ## 🛠️ System Requirements
+
+### Minimum Requirements
 - Windows 11 (64-bit)
-- 4GB RAM minimum (8GB recommended)
+- 4GB RAM
 - 1GB free disk space
 - Admin privileges for real-time protection
 
+### Recommended Requirements
+- Windows 11 (64-bit, version 22H2 or later)
+- 8GB RAM
+- 2GB free disk space
+- SSD storage
+- Admin privileges
+
+### Developer Requirements
+- Rust toolchain (1.70 or later)
+- Node.js 18 or later (for UI development)
+- Visual Studio Build Tools with C++ workload
+- Git for Windows
+
+---
+
 ## 📥 Installation
 
-### Prerequisites
+### End User Installation
+1. Download the latest release from the [Releases page](https://github.com/CripterHack/Amaru/releases).
+2. Run the installer with administrator privileges.
+3. Follow the on-screen instructions to complete the installation.
+
+### Manual Installation
+1. Install the required dependencies (YARA 4.3+ and Radare2).
+2. Download the pre-built binary package.
+3. Extract to your desired location.
+4. Run `amaru-setup.exe` to configure the service components.
+
+### Developer Installation
 1. **Install Rust:**
    ```powershell
    winget install Rustlang.Rust.MSVC
@@ -67,9 +97,8 @@ Designed for users who value transparency, customization, and Windows 11 compati
    winget install OpenJS.NodeJS.LTS
    ```
 
-### Build Steps
-1. **Clone and Build:**
-   ```bash
+3. **Clone and Build:**
+   ```powershell
    git clone https://github.com/CripterHack/Amaru.git
    cd Amaru
    
@@ -80,50 +109,113 @@ Designed for users who value transparency, customization, and Windows 11 compati
    cd gui
    npm install
    npm run build
+   
+   # Build complete package
+   cd ..
+   cargo run --bin amaru-packager
    ```
 
-2. **Configure:**
-   ```bash
+4. **Configure:**
+   ```powershell
    copy .env.example .env
    # Edit .env with your settings
+   ```
+
+5. **Run Examples:**
+   ```powershell
+   # Run the EICAR test file detection example
+   cargo run --example eicar_detection
+   
+   # Run other examples
+   cargo run --example use_core_services
    ```
 
 ---
 
 ## 🚀 Usage
 
-### Basic Commands
-```bash
-# On-demand scan
-amaru scan <path>
+### GUI Interface
+The most user-friendly way to interact with Amaru is through its graphical interface:
+1. Launch Amaru from the Start menu or desktop shortcut.
+2. Use the dashboard to view protection status and recent events.
+3. Schedule scans and configure protection settings through the Settings page.
+
+### Command Line Interface
+Amaru provides a powerful command-line interface for advanced users and automation:
+
+```powershell
+# Scan a specific file
+amaru scan --path C:\path\to\file.exe
+
+# Scan a directory recursively
+amaru scan --path C:\Users\Documents --recursive
 
 # Enable real-time protection
-amaru protect --enable
+amaru monitor --action start
 
 # Update YARA rules
-amaru update-rules
+amaru update --rules
 
-# Launch GUI
-amaru gui
+# Analyze a suspicious file with detailed reporting
+amaru analyze --file C:\suspicious\file.exe --radare2 --heuristic
+
+# Test detection capabilities with EICAR test file
+amaru test-eicar
+
+# Check service status
+amaru service --action status
 ```
 
-### Security Features
-- **Real-time Protection:**
-  - Kernel-level file system monitoring
-  - Process behavior analysis
-  - Network traffic inspection (WFP integration)
+### Windows Service
+Amaru runs as a Windows service for real-time protection:
 
-- **Scanning Capabilities:**
-  - YARA pattern matching
-  - PE file analysis with Radare2
-  - Memory scanning
-  - Rootkit detection
+```powershell
+# Install the service (admin privileges required)
+amaru service --action install
 
-- **Update System:**
-  - Automatic signature updates
-  - Ed25519 cryptographic verification
-  - Rollback capability
-  - Delta updates for efficiency
+# Start the service
+amaru service --action start
+
+# Stop the service
+amaru service --action stop
+
+# Check service status
+amaru service --action status
+```
+
+### Scheduling
+Configure scheduled scans with the built-in scheduler:
+
+```powershell
+# Schedule a daily scan at 3 AM
+amaru schedule --daily --time "03:00" --path "C:\Users"
+
+# Schedule a weekly scan on Sundays
+amaru schedule --weekly --day Sunday --time "02:00" --path "C:\"
+```
+
+---
+
+## 🛡️ Security Features
+
+### Real-time Protection
+- **File System Monitoring:** Detects and scans files as they're created or modified
+- **Process Behavior Analysis:** Monitors process activities for suspicious behavior
+- **Network Traffic Inspection:** Integrates with Windows Filtering Platform
+- **Executable Analysis:** Deep inspection of PE files before execution
+
+### Scanning Capabilities
+- **Signature-Based Detection:** Using YARA rules and ClamAV databases
+- **Heuristic Analysis:** Detects suspicious patterns and behaviors
+- **Memory Scanning:** Examines process memory for hidden threats
+- **Static Analysis:** Uses Radare2 to analyze executable structure and behavior
+- **EICAR Test Detection:** Recognizes the EICAR test file for antivirus validation
+
+### Advanced Protection
+- **Quarantine System:** Safely isolates detected threats
+- **Behavioral Blocking:** Prevents suspicious activities in real-time
+- **Reputation Checking:** Verifies file reputation against known safe files
+- **Rootkit Detection:** Identifies hidden and privileged malware
 
 ---
 
@@ -144,7 +236,7 @@ amaru/
 ## 🔧 Development
 
 ### Setup Development Environment
-```bash
+```powershell
 # Install dev tools
 cargo install cargo-watch cargo-audit
 
@@ -156,27 +248,42 @@ cd gui
 npm run dev
 ```
 
-### Security Considerations
-- All updates are cryptographically signed
-- Privilege separation for different components
-- Memory-safe implementation in Rust
-- Regular security audits
-- CVE monitoring and rapid response
+### Building from Source
+```powershell
+# Build release version
+cargo build --release
 
----
+# Build installer
+cargo run --bin amaru-installer-builder
 
-## 🤝 Contributing
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+# Run tests
+cargo test --all
 
-### Code Style
-- Follow Rust style guidelines
-- Use clippy for linting
-- Document public APIs
-- Include tests for new features
+# Build documentation
+cargo doc --open
+```
+
+### Testing
+```powershell
+# Run unit tests
+cargo test
+
+# Run integration tests
+cargo test --test '*'
+
+# Run specific test
+cargo test --test scan_test
+```
+
+### Debugging
+```powershell
+# Enable debug logging
+$env:RUST_LOG="debug,amaru=trace"
+cargo run
+
+# Run with performance profiling
+cargo run --features profile_allocation
+```
 
 ---
 
@@ -191,10 +298,11 @@ This project is licensed under the GNU General Public License v2.0 - see the [LI
 - [Svelte](https://svelte.dev/) - UI library
 - [TailwindCSS](https://tailwindcss.com/) - Styling system
 
-## 💬 Support
-- [Open an issue](https://github.com/CripterHack/Amaru/issues)
-- [Documentation](https://amaru.readthedocs.io/)
-- [Community Forum](https://forum.amaru.dev)
+## 💬 Support and Community
+- [Open an issue](https://github.com/CripterHack/Amaru/issues) for bug reports or feature requests
+
+## 🔄 Contributing
+Contributions are welcome! Please check the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines.
 
 ---
 
