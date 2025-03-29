@@ -2,7 +2,7 @@
 name = "realtime-monitor"
 version = "0.1.0"
 edition = "2021"
-authors = ["CripterHack"]
+authors = ["Amaru Security Team"]
 description = "Monitor en tiempo real para Amaru Antivirus"
 license = "GPL-2.0"
 

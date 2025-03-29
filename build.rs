@@ -43,8 +43,8 @@ fn copy_dependencies(dist_dir: &Path, arch: &str) {
     let deps = vec![
         format!("yara-{}.dll", arch),
         format!("radare2-{}.dll", arch),
-        "libcrypto.dll",
-        "libssl.dll",
+        String::from("libcrypto.dll"),
+        String::from("libssl.dll"),
     ];
     
     // Posibles ubicaciones de las dependencias
