@@ -17,6 +17,7 @@ use std::{
 };
 use log::{debug, info, warn};
 use thiserror::Error;
+use serde_json;
 
 /// Tipos de comportamientos maliciosos conocidos
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +50,8 @@ pub enum MaliciousBehaviorType {
     AdvancedPersistentThreat,
     /// Empaquetado
     Packing,
+    /// Test file
+    TestFile,
 }
 
 /// Detalles de un comportamiento malicioso
@@ -811,6 +814,24 @@ impl BehaviorAnalyzer {
 
         Ok(())
     }
+
+    /// Detects common test viruses like EICAR
+    pub fn detect_test_files(&self, content: &[u8]) -> Option<MaliciousBehavior> {
+        // EICAR test string pattern
+        const EICAR_PATTERN: &[u8] = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+        
+        // Check if content contains the EICAR test string
+        if content.windows(EICAR_PATTERN.len()).any(|window| window == EICAR_PATTERN) {
+            return Some(MaliciousBehavior {
+                behavior_type: MaliciousBehaviorType::TestFile,
+                description: "EICAR antivirus test file detected".to_string(),
+                confidence: 0, // It's not actually malicious, just a test
+                evidence: HashMap::new(),
+            });
+        }
+        
+        None
+    }
 }
 
 #[cfg(test)]
@@ -829,6 +850,23 @@ mod tests {
         let behaviors = analyzer.analyze_imports_optimized(&imports, "test_hash").await;
         assert!(!behaviors.is_empty());
         assert!(behaviors.iter().any(|b| matches!(b.behavior_type, MaliciousBehaviorType::ProcessInjection)));
+    }
+    
+    #[tokio::test]
+    async fn test_eicar_detection() {
+        let analyzer = BehaviorAnalyzer::new();
+        // EICAR test string 
+        let eicar_content = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+        
+        // Test detection
+        let result = analyzer.detect_test_files(eicar_content);
+        
+        // Verify result
+        assert!(result.is_some(), "EICAR test file should be detected");
+        if let Some(behavior) = result {
+            assert!(matches!(behavior.behavior_type, MaliciousBehaviorType::TestFile));
+            assert_eq!(behavior.description, "EICAR antivirus test file detected");
+        }
     }
     
     #[tokio::test]

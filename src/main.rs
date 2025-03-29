@@ -18,10 +18,10 @@ use windows_service::{
 use std::thread;
 
 // Importar los módulos internos
-use amaru_yara_engine::{YaraEngine, YaraConfig, ScanResult};
-use amaru_yara_engine::heuristic::{HeuristicEngine, HeuristicConfig};
-use amaru_radare2_analyzer::{Radare2Analyzer, Radare2Config};
-use amaru_realtime_monitor::{RealtimeMonitor, MonitorConfig};
+use yara_engine::{YaraEngine, YaraConfig, ScanResult};
+use yara_engine::heuristic::{HeuristicEngine, HeuristicConfig};
+use radare2_analyzer::{Radare2Analyzer, Radare2Config};
+use realtime_monitor::{RealtimeMonitor, MonitorConfig};
 
 /// Amaru: Next Generation Antivirus
 #[derive(Parser)]

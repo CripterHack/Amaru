@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use yara_engine::{YaraEngine, ScanResult as YaraScanResult, RuleMatch};
 use radare2_analyzer::{Radare2Analyzer, PEAnalysis};
-use realtime_monitor::{RealtimeMonitor, FileEvent, FileEventType};
+use realtime_monitor::{RealtimeMonitor, FileEvent, FileEventType, EventAction};
 use yara_engine::heuristic::{HeuristicEngine, HeuristicConfig, HeuristicResult, ConfidenceLevel};
 
 pub mod service;
@@ -134,47 +134,110 @@ pub struct Amaru {
 }
 
 impl Amaru {
-    /// Crea una nueva instancia de Amaru
+    /// Creates a new instance of Amaru
     ///
-    /// # Argumentos
-    /// * `config` - Configuración inicial del antivirus
+    /// # Arguments
+    /// * `config` - Configuration for the antivirus
     ///
-    /// # Errores
-    /// Retorna error si:
-    /// - La configuración es inválida
-    /// - No se pueden cargar las reglas YARA
-    /// - No se puede inicializar el analizador Radare2
+    /// # Errors
+    /// Returns an error if:
+    /// - Configuration is invalid
+    /// - Required components cannot be initialized
     pub async fn new(config: Config) -> Result<Self, AmaruError> {
-        // Validar configuración
+        // Validate configuration
         config.validate().map_err(|e| AmaruError::Config(e.to_string()))?;
         
-        // Inicializar componentes
-        let yara_engine = Arc::new(YaraEngine::new(&config.yara_rules_path)
-            .map_err(|e| AmaruError::Yara(e.to_string()))?);
-            
-        let radare2_analyzer = Arc::new(Radare2Analyzer::new()
-            .map_err(|e| AmaruError::Analysis(e.to_string()))?);
-            
-        let quarantine = Arc::new(Quarantine::new(
-            &config.quarantine_config.quarantine_path,
-            config.quarantine_config.max_size,
-            config.quarantine_config.retention_days,
-        )?);
+        // Initialize YARA engine
+        let yara_engine = Some(
+            YaraEngine::new(&config.yara_rules_path)
+                .map_err(|e| AmaruError::Yara(e.to_string()))?
+        );
         
+        // Initialize radare2 analyzer
+        let radare2_analyzer = Arc::new(
+            Radare2Analyzer::new()
+                .map_err(|e| AmaruError::Analysis(e.to_string()))?
+        );
+        
+        // Initialize quarantine system
+        let quarantine = Arc::new(
+            Quarantine::new(
+                &config.quarantine_config.quarantine_path,
+                config.quarantine_config.max_size,
+                config.quarantine_config.retention_days,
+            )?
+        );
+        
+        // Initialize behavior analyzer
         let behavior_analyzer = Arc::new(BehaviorAnalyzer::new());
         
-        Ok(Self {
+        // Initialize event channel
+        let event_channel = EventChannel::new();
+        
+        // Initialize scan cache with configured TTL
+        let scan_cache = dashmap::DashMap::new();
+        
+        // Initialize heuristic engine if enabled
+        let heuristic_engine = if config.enable_heuristic_engine {
+            let heuristic_config = HeuristicConfig {
+                confidence_threshold: config.heuristic_config.confidence_threshold,
+                max_analysis_time_ms: config.heuristic_config.max_analysis_time_ms,
+                enable_memory_scanning: config.heuristic_config.enable_memory_scanning,
+            };
+            
+            Some(
+                HeuristicEngine::new(heuristic_config)
+                    .map_err(|e| AmaruError::InitializationError(format!("Failed to initialize heuristic engine: {}", e)))?
+            )
+        } else {
+            None
+        };
+        
+        // Initialize core services
+        let core_services = if config.enable_core_services {
+            let services = CoreServices::new(&config)
+                .map_err(|e| AmaruError::InitializationError(format!("Failed to initialize core services: {}", e)))?;
+                
+            Some(Arc::new(tokio::sync::Mutex::new(services)))
+        } else {
+            None
+        };
+        
+        // Initialize real-time monitor if enabled
+        let realtime_monitor = if config.enable_realtime_protection {
+            let monitor_config = MonitorConfig {
+                paths: config.realtime_config.paths.clone(),
+                extensions_filter: config.realtime_config.extensions_filter.clone(),
+                ignore_paths: config.realtime_config.ignore_paths.clone(),
+                event_delay_ms: config.realtime_config.event_delay_ms,
+            };
+            
+            Some(
+                RealtimeMonitor::new(monitor_config)
+                    .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?
+            )
+        } else {
+            None
+        };
+        
+        // Create the Amaru instance with all components initialized
+        let instance = Self {
             config,
-            yara_engine: None,
+            yara_engine,
             radare2_analyzer,
             behavior_analyzer,
-            realtime_monitor: None,
+            realtime_monitor,
             quarantine,
-            event_channel: EventChannel::new(),
-            scan_cache: dashmap::DashMap::new(),
-            heuristic_engine: None,
-            core_services: None,
-        })
+            event_channel,
+            scan_cache,
+            heuristic_engine,
+            core_services,
+        };
+        
+        // Log successful initialization
+        info!("Amaru antivirus initialized successfully");
+        
+        Ok(instance)
     }
     
     /// Escanea un archivo en busca de amenazas
@@ -301,95 +364,98 @@ impl Amaru {
         Ok(result)
     }
     
-    /// Habilita la protección en tiempo real
+    /// Enables real-time protection
     ///
-    /// Comienza a monitorear las rutas especificadas en la configuración
-    /// y escanea automáticamente los archivos nuevos o modificados.
-    ///
-    /// # Errores
-    /// Retorna error si:
-    /// - No se puede inicializar el monitor
-    /// - No se pueden establecer los filtros
-    /// - No se pueden monitorear las rutas
+    /// # Errors
+    /// Returns an error if the real-time monitor cannot be started
     pub async fn enable_realtime_protection(&mut self) -> Result<(), AmaruError> {
+        // Check if real-time protection is already enabled
         if self.realtime_monitor.is_some() {
-            info!("La protección en tiempo real ya está activa");
             return Ok(());
         }
         
-        info!("Habilitando protección en tiempo real con análisis heurístico...");
-        
-        // Inicializamos el motor heurístico si no estaba inicializado
-        if self.heuristic_engine.is_none() {
-            self.init_heuristic_engine(None)?;
-        }
-        
-        // Configuración para el monitor
-        let config = MonitorConfig {
-            paths: vec![PathBuf::from("C:\\"), PathBuf::from("D:\\")], // Monitorear drives principales
-            extensions_filter: vec!["exe".to_string(), "dll".to_string(), "sys".to_string()],
-            ignore_paths: vec![PathBuf::from("C:\\Windows\\Temp")],
-            event_delay_ms: 500,
+        // Create monitor configuration from current settings
+        let monitor_config = MonitorConfig {
+            paths: self.config.realtime_config.paths.clone(),
+            extensions_filter: self.config.realtime_config.extensions_filter.clone(),
+            ignore_paths: self.config.realtime_config.ignore_paths.clone(),
+            event_delay_ms: self.config.realtime_config.event_delay_ms,
         };
         
-        let monitor = RealtimeMonitor::new(config).await
-            .map_err(|e| AmaruError::RealTimeMonitorError(format!(
-                "No se pudo inicializar el monitor en tiempo real: {}", e
-            )))?;
+        // Initialize the real-time monitor
+        let mut monitor = RealtimeMonitor::new(monitor_config)
+            .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
+            
+        // Get a clone of required components for the closure
+        let yara_engine = self.yara_engine.as_ref()
+            .ok_or_else(|| AmaruError::InitializationError("YARA engine not initialized".to_string()))?
+            .clone();
+            
+        let radare2_analyzer = Arc::clone(&self.radare2_analyzer);
+        let event_sender = self.event_channel.sender().clone();
+        let quarantine = Arc::clone(&self.quarantine);
+        let config = self.config.clone();
         
-        // Configuramos un callback que analiza archivos en tiempo real
-        // y utiliza análisis heurístico además de reglas YARA
-        let yara_engine = self.yara_engine.clone();
-        let heuristic_engine = self.heuristic_engine.clone();
-        
-        monitor.set_callback(move |event: FileEvent| {
-            // Solo procesamos eventos de creación y modificación
-            if matches!(event.event_type, FileEventType::Created | FileEventType::Modified) {
-                // Ruta del archivo a analizar
-                let file_path = event.path.clone();
+        // Start the monitor with event handler
+        monitor.start(move |event| {
+            let file_path = event.path.clone();
+            let event_type = event.event_type.clone();
+            
+            // Only scan created or modified files
+            if matches!(event_type, FileEventType::Created | FileEventType::Modified) {
+                // Clone required components for async block
+                let yara_engine_clone = yara_engine.clone();
+                let radare2_analyzer_clone = Arc::clone(&radare2_analyzer);
+                let event_sender_clone = event_sender.clone();
+                let quarantine_clone = Arc::clone(&quarantine);
+                let config_clone = config.clone();
                 
-                // Análisis con YARA si está disponible
-                if let Some(yara) = &yara_engine {
-                    if let Ok(result) = yara.scan_file(&file_path) {
-                        if !result.matches.is_empty() {
-                            // Detectamos amenaza con YARA
-                            warn!("ALERTA: Amenaza detectada por YARA en {}: {} reglas coincidentes", 
-                                  file_path.display(), result.matches.len());
-                            
-                            // Aquí podríamos tomar acciones como cuarentena
-                            // ...
-                            
-                            return EventAction::Continue;
+                // Spawn async task to handle scanning
+                tokio::spawn(async move {
+                    match Amaru::scan_file_internal(
+                        &file_path, 
+                        &yara_engine_clone, 
+                        &radare2_analyzer_clone,
+                        &config_clone
+                    ).await {
+                        Ok(result) => {
+                            // Check if file is malicious
+                            if result.risk_level >= RiskLevel::High {
+                                // Send threat event
+                                let _ = event_sender_clone.send(Event::ThreatDetected {
+                                    path: file_path.clone(),
+                                    details: result.threat_details.clone().unwrap_or_default(),
+                                    timestamp: chrono::Utc::now(),
+                                });
+                                
+                                // Quarantine if configured to do so
+                                if config_clone.quarantine_config.auto_quarantine {
+                                    if let Err(e) = quarantine_clone.quarantine_file(&file_path, "Real-time detection") {
+                                        error!("Failed to quarantine file {}: {}", file_path.display(), e);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to scan file {}: {}", file_path.display(), e);
                         }
                     }
-                }
-                
-                // Análisis heurístico si está disponible y no se detectó por YARA
-                if let Some(heuristic) = &heuristic_engine {
-                    if let Ok(result) = heuristic.analyze_file(&file_path) {
-                        // Solo consideramos resultados con confianza media o superior
-                        if result.confidence >= ConfidenceLevel::Medium {
-                            warn!("ALERTA: Comportamiento sospechoso detectado en {}: {} ({:?})", 
-                                  file_path.display(), result.description, result.threat_type);
-                            
-                            // Aquí podríamos tomar acciones basadas en el tipo de amenaza
-                            // ...
-                            
-                            return EventAction::Continue;
-                        }
-                    }
-                }
+                });
             }
             
-            // Continuar monitoreando
+            // Continue monitoring
             EventAction::Continue
-        });
+        })
+        .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
         
-        // Iniciamos el monitor
-        monitor.start().await.map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
-        
+        // Store the initialized monitor
         self.realtime_monitor = Some(monitor);
-        info!("Protección en tiempo real activada correctamente");
+        
+        // Update configuration
+        self.config.enable_realtime_protection = true;
+        
+        // Log successful enabling
+        info!("Real-time protection enabled successfully");
         
         Ok(())
     }
@@ -437,34 +503,108 @@ impl Amaru {
         path: &Path,
         yara_engine: &YaraEngine,
         radare2_analyzer: &Radare2Analyzer,
+        behavior_analyzer: &BehaviorAnalyzer,
         config: &Config,
     ) -> Result<ScanResult, AmaruError> {
-        // Verificar tamaño máximo
-        let metadata = path.metadata()?;
-        if metadata.len() > config.scan_config.max_file_size {
-            return Err(AmaruError::Analysis("Archivo demasiado grande".into()));
+        // Start the scan
+        debug!("Scanning file: {}", path.display());
+        let start_time = std::time::Instant::now();
+        
+        // Check if file exists
+        if !path.exists() {
+            return Err(AmaruError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("File not found: {}", path.display())
+            )));
         }
         
-        // Escanear con YARA
-        let yara_matches = yara_engine.scan_file(path)
-            .map_err(|e| AmaruError::Yara(e.to_string()))?;
-            
-        // Análisis estático para ejecutables
-        let static_analysis = if path.extension().map_or(false, |ext| ext == "exe" || ext == "dll") {
-            Some(radare2_analyzer.analyze_pe(path)
-                .map_err(|e| AmaruError::Analysis(e.to_string()))?)
+        // Get file metadata
+        let metadata = path.metadata().map_err(|e| AmaruError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to get metadata for {}: {}", path.display(), e)
+        )))?;
+        
+        // Check file size limit
+        if metadata.len() > config.scan_config.max_file_size {
+            return Err(AmaruError::Analysis(format!(
+                "File {} exceeds maximum size limit ({} bytes)",
+                path.display(),
+                config.scan_config.max_file_size
+            )));
+        }
+        
+        // Scan with YARA
+        let yara_matches = match yara_engine.scan_file(path) {
+            Ok(result) => result.matches,
+            Err(e) => {
+                warn!("YARA scan error for {}: {}", path.display(), e);
+                Vec::new()
+            }
+        };
+        
+        // Perform static analysis if it's an executable
+        let static_analysis = if path.extension().map_or(false, |ext| 
+            ext == "exe" || ext == "dll" || ext == "sys") {
+            match radare2_analyzer.analyze_pe(path) {
+                Ok(analysis) => Some(analysis),
+                Err(e) => {
+                    warn!("Static analysis error for {}: {}", path.display(), e);
+                    None
+                }
+            }
         } else {
             None
         };
         
-        Ok(ScanResult {
+        // Read file content for behavior analysis (limit to first 1MB for large files)
+        let content = match std::fs::read(path) {
+            Ok(data) => {
+                if data.len() > 1024 * 1024 {
+                    data[..1024 * 1024].to_vec()
+                } else {
+                    data
+                }
+            },
+            Err(e) => {
+                warn!("Failed to read file content for behavior analysis: {}", e);
+                Vec::new()
+            }
+        };
+        
+        // Detect test files like EICAR
+        let mut behaviors = Vec::new();
+        if !content.is_empty() {
+            if let Some(test_behavior) = behavior_analyzer.detect_test_files(&content) {
+                behaviors.push(test_behavior);
+            }
+        }
+        
+        // Perform additional behavior analysis for executables
+        if let Some(analysis) = &static_analysis {
+            // Analyze imports
+            behaviors.extend(behavior_analyzer.analyze_imports(&analysis.imports));
+            
+            // Analyze sections
+            behaviors.extend(behavior_analyzer.analyze_sections(
+                &analysis.sections.iter()
+                    .map(|s| (s.name.clone(), s.entropy))
+                    .collect::<Vec<_>>()
+            ));
+        }
+        
+        // Create scan result
+        let result = ScanResult {
             path: path.to_path_buf(),
             yara_matches,
             static_analysis,
-            risk_level: RiskLevel::Low, // El nivel de riesgo se calcula después
-            threat_details: None,
-            behaviors: None,
-        })
+            risk_level: RiskLevel::Unknown, // Will be calculated later
+            threat_details: None, // Will be populated later
+            behaviors: if behaviors.is_empty() { None } else { Some(behaviors) },
+        };
+        
+        debug!("Scan completed in {}ms", start_time.elapsed().as_millis());
+        
+        Ok(result)
     }
     
     fn calculate_risk_level(
@@ -784,32 +924,35 @@ impl Amaru {
         }
     }
     
-    /// Inicializa el motor de análisis heurístico con gestión optimizada de recursos
+    /// Initializes the heuristic engine
+    ///
+    /// # Arguments
+    /// * `config` - Optional configuration for the heuristic engine
+    ///
+    /// # Errors
+    /// Returns an error if the heuristic engine cannot be initialized
     pub fn init_heuristic_engine(&mut self, config: Option<HeuristicConfig>) -> Result<(), AmaruError> {
-        let heuristic_config = config.unwrap_or_default();
+        // Use provided config or create from existing settings
+        let heuristic_config = config.unwrap_or_else(|| HeuristicConfig {
+            confidence_threshold: self.config.heuristic_config.confidence_threshold,
+            max_analysis_time_ms: self.config.heuristic_config.max_analysis_time_ms,
+            enable_memory_scanning: self.config.heuristic_config.enable_memory_scanning,
+        });
         
-        info!("Inicializando motor de análisis heurístico...");
+        // Create and initialize the heuristic engine
+        let engine = HeuristicEngine::new(heuristic_config)
+            .map_err(|e| AmaruError::InitializationError(format!("Failed to initialize heuristic engine: {}", e)))?;
+            
+        // Store the initialized engine
+        self.heuristic_engine = Some(engine);
         
-        // Usar MiMalloc para la asignación de memoria
-        #[cfg(feature = "optimize_memory")]
-        {
-            std::alloc::System::set_alloc_error_hook(|_| {
-                error!("Error crítico de memoria en el motor heurístico");
-                std::process::abort();
-            });
-        }
+        // Update configuration
+        self.config.enable_heuristic_engine = true;
         
-        match HeuristicEngine::new(heuristic_config) {
-            Ok(engine) => {
-                self.heuristic_engine = Some(engine);
-                info!("Motor heurístico inicializado correctamente");
-                Ok(())
-            },
-            Err(e) => {
-                error!("Error al inicializar motor heurístico: {}", e);
-                Err(AmaruError::InitializationError(format!("Error al inicializar motor heurístico: {}", e)))
-            }
-        }
+        // Log successful initialization
+        info!("Heuristic engine initialized successfully");
+        
+        Ok(())
     }
     
     /// Optimiza los recursos del sistema según la configuración actual
@@ -1255,6 +1398,39 @@ rule test_rule {
         
         // Deshabilitar protección
         amaru.disable_realtime_protection().await?;
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_eicar_detection() -> Result<(), AmaruError> {
+        let temp_dir = tempdir()?;
+        
+        // Create rules directory
+        let rules_dir = temp_dir.path().join("rules");
+        std::fs::create_dir(&rules_dir)?;
+        
+        // Create EICAR test file
+        let eicar_file = temp_dir.path().join("eicar.txt");
+        let eicar_content = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+        std::fs::File::create(&eicar_file)?.write_all(eicar_content)?;
+        
+        // Create configuration
+        let mut config = Config::default();
+        config.yara_rules_path = rules_dir;
+        config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
+        
+        // Create Amaru instance
+        let amaru = Amaru::new(config).await?;
+        
+        // Scan EICAR file
+        let result = amaru.scan_file(&eicar_file).await?;
+        
+        // Verify test file detection
+        assert!(result.behaviors.is_some(), "EICAR test file should be detected");
+        if let Some(behaviors) = &result.behaviors {
+            assert!(behaviors.iter().any(|b| matches!(b.behavior_type, MaliciousBehaviorType::TestFile)));
+        }
         
         Ok(())
     }

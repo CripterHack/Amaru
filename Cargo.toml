@@ -6,6 +6,14 @@ authors = ["Amaru Security Team"]
 description = "Antivirus moderno con análisis heurístico avanzado"
 license = "GPL-2.0"
 
+[workspace]
+members = [
+    "yara-engine",
+    "realtime-monitor",
+    "radare2-analyzer",
+    "updater",
+]
+
 [dependencies]
 # Dependencias core
 tokio = { version = "1.29.1", features = ["full"] }
@@ -27,10 +35,10 @@ parking_lot = "0.12.1"
 futures-locks = "0.7.1"
 
 # Monitoreo y análisis
-amaru-yara-engine = { path = "yara-engine", version = "0.1.0" }
-amaru-realtime-monitor = { path = "realtime-monitor", version = "0.1.0" }
+yara-engine = { path = "yara-engine", version = "0.1.0" }
+realtime-monitor = { path = "realtime-monitor", version = "0.1.0" }
 radare2-analyzer = { path = "radare2-analyzer", version = "0.1.0" }
-amaru-updater = { path = "updater", version = "0.1.0" }
+updater = { path = "updater", version = "0.1.0" }
 
 # Seguridad
 sha2 = "0.10.8"

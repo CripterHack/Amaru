@@ -191,6 +191,21 @@ impl RealTimeMonitor {
     }
     
     /// Start monitoring with a callback function for processing events
+    ///
+    /// Begins real-time monitoring of configured paths and processes file events
+    /// using the provided callback function.
+    ///
+    /// # Arguments
+    /// * `on_event` - Callback function that processes file events and returns an action
+    ///
+    /// # Returns
+    /// Success if monitoring started, error otherwise
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Monitor is already running
+    /// - Failed to add watch paths
+    /// - Failed to start watcher
     pub fn start<F>(&mut self, on_event: F) -> Result<(), MonitorError> 
     where
         F: Fn(FileEvent) -> EventAction + Send + 'static,
@@ -198,138 +213,193 @@ impl RealTimeMonitor {
         // Update state to running
         {
             let mut state = self.state.lock().unwrap();
-            *state = MonitorState::Running;
-            
-            // Update stats
+            match *state {
+                MonitorState::Running => {
+                    info!("Real-time monitor is already running");
+                    return Ok(());
+                }
+                MonitorState::Paused => {
+                    *state = MonitorState::Running;
+                    info!("Resuming real-time monitor");
+                    return Ok(());
+                }
+                MonitorState::Stopped => {
+                    *state = MonitorState::Running;
+                }
+            }
+        }
+        
+        // Reset statistics
+        {
             let mut stats = self.stats.lock().unwrap();
+            *stats = MonitorStats::default();
             stats.start_time = Some(chrono::Utc::now());
         }
         
-        // Create a clone of the sender for the watcher
-        let event_sender = self.event_sender.clone();
+        info!("Starting real-time file monitor with {} paths", self.config.paths.len());
         
-        // Create a debounced watcher to reduce duplicate events
-        let (tx, rx) = std::sync::mpsc::channel();
+        // Create a channel for receiving events from the watcher
+        let (tx, rx) = unbounded();
+        let tx_clone = tx.clone();
         
+        // Set up debouncer for file events
         let mut debouncer = new_debouncer(
             Duration::from_millis(self.config.event_delay_ms),
             None,
-            tx,
-        )
-        .map_err(|e| MonitorError::WatcherInitError(e.to_string()))?;
-        
-        // Add paths to watch
-        for path in &self.config.paths {
-            info!("Watching path: {}", path.display());
-            self.watcher.watch(path, RecursiveMode::Recursive)?;
-            self.watched_paths.insert(path.clone(), RecursiveMode::Recursive);
-        }
-        
-        // Create clones for the watcher thread
-        let extensions_filter = self.config.extensions_filter.clone();
-        let ignore_paths = self.config.ignore_paths.clone();
-        
-        // Create a thread to forward events from the debouncer to our channel
-        let extensions_filter_arc = Arc::new(extensions_filter);
-        let ignore_paths_arc = Arc::new(ignore_paths);
-        
-        std::thread::spawn(move || {
-            for result in rx {
-                match result {
+            move |res: Result<Vec<DebouncedEvent>, _>| {
+                match res {
                     Ok(events) => {
                         for event in events {
-                            // Check if the file should be monitored based on extension
-                            let should_monitor = Self::should_monitor_file(
-                                &event.path,
-                                &extensions_filter_arc,
-                                &ignore_paths_arc,
-                            );
-                            
-                            if should_monitor {
-                                // Simplify event type detection based on file existence
-                                let event_type = if event.path.exists() {
-                                    EventType::Modify
-                                } else {
-                                    EventType::Delete
-                                };
-                                
-                                let file_event = FileEvent {
-                                    path: event.path,
-                                    event_type,
-                                    timestamp: chrono::Utc::now(),
-                                    process_info: None,
-                                };
-                                
-                                if let Err(e) = event_sender.send(file_event) {
-                                    error!("Failed to send file event: {}", e);
-                                }
+                            if let Err(e) = tx_clone.send(event) {
+                                error!("Failed to send event: {}", e);
                             }
                         }
-                    },
-                    Err(e) => {
-                        error!("Watch error: {:?}", e);
                     }
+                    Err(e) => error!("Debouncer error: {}", e),
                 }
-            }
-        });
+            },
+        ).map_err(|e| MonitorError::WatcherInitError(format!("Failed to create debouncer: {}", e)))?;
         
-        // Set up event processing thread
-        let event_receiver = self.event_receiver.clone();
-        let state_arc = self.state.clone();
-        let stats_arc = self.stats.clone();
-        
-        std::thread::spawn(move || {
-            while *state_arc.lock().unwrap() != MonitorState::Stopped {
-                // Check if we're paused
-                if *state_arc.lock().unwrap() == MonitorState::Paused {
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-                
-                // Wait for an event with timeout
-                match event_receiver.recv_timeout(Duration::from_millis(100)) {
-                    Ok(event) => {
-                        // Update stats
-                        {
-                            let mut stats = stats_arc.lock().unwrap();
-                            stats.events_processed += 1;
-                        }
-                        
-                        // Process the event
-                        let action = on_event(event);
-                        
-                        // Handle action
-                        match action {
-                            EventAction::Continue => {
-                                // Continue processing
-                            },
-                            EventAction::Pause => {
-                                let mut state = state_arc.lock().unwrap();
-                                *state = MonitorState::Paused;
-                                info!("Monitoring paused by event handler");
-                            },
-                            EventAction::Stop => {
-                                let mut state = state_arc.lock().unwrap();
-                                *state = MonitorState::Stopped;
-                                info!("Monitoring stopped by event handler");
-                                break;
-                            }
-                        }
-                    },
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                        // No events received, continue
-                    },
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                        error!("Event channel disconnected");
-                        break;
-                    }
-                }
+        // Add paths to watcher
+        for path in &self.config.paths {
+            info!("Adding watch path: {}", path.display());
+            if !path.exists() {
+                warn!("Watch path does not exist: {}", path.display());
+                continue;
             }
             
-            info!("Monitor event processing thread stopped");
-        });
+            // Determine if path should be watched recursively
+            let recursive = path.is_dir();
+            let mode = if recursive {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            
+            // Add path to watcher
+            match debouncer.watcher().watch(path, mode) {
+                Ok(_) => {
+                    debug!("Successfully added watch for {}", path.display());
+                    self.watched_paths.insert(path.clone(), mode);
+                }
+                Err(e) => {
+                    error!("Failed to watch path {}: {}", path.display(), e);
+                    // Continue with other paths instead of failing completely
+                }
+            }
+        }
         
-        info!("Real-time monitoring started");
+        // Check if we have any paths being watched
+        if self.watched_paths.is_empty() {
+            return Err(MonitorError::WatchPathError("No valid paths could be added to watch".to_string()));
+        }
+        
+        // Get clones of what we need for the thread
+        let event_receiver = rx;
+        let state = Arc::clone(&self.state);
+        let stats = Arc::clone(&self.stats);
+        let filters = Arc::clone(&self.filters);
+        let watched_paths = Arc::clone(&self.watched_paths);
+        
+        // Spawn thread to process events
+        std::thread::Builder::new()
+            .name("realtime-monitor".to_string())
+            .spawn(move || {
+                info!("Real-time monitor thread started");
+                
+                'monitor_loop: while let Ok(event) = event_receiver.recv() {
+                    // Check if we should continue processing
+                    let current_state = *state.lock().unwrap();
+                    if current_state != MonitorState::Running {
+                        if current_state == MonitorState::Stopped {
+                            break 'monitor_loop;
+                        }
+                        // Skip if paused
+                        continue;
+                    }
+                    
+                    // Extract path from event
+                    let path = event.path;
+                    
+                    // Skip if path doesn't match our filters
+                    if !Self::should_process_file(&path, &filters) {
+                        continue;
+                    }
+                    
+                    // Create FileEvent from notify event
+                    let file_event = match event.event {
+                        notify::event::Event::Create(create) => {
+                            debug!("File created: {}", path.display());
+                            FileEvent {
+                                path: path.clone(),
+                                event_type: FileEventType::Created,
+                                timestamp: chrono::Utc::now(),
+                                process_info: Self::get_process_info(&path),
+                            }
+                        }
+                        notify::event::Event::Modify(modify) => {
+                            debug!("File modified: {}", path.display());
+                            FileEvent {
+                                path: path.clone(),
+                                event_type: FileEventType::Modified,
+                                timestamp: chrono::Utc::now(),
+                                process_info: Self::get_process_info(&path),
+                            }
+                        }
+                        notify::event::Event::Remove(remove) => {
+                            debug!("File deleted: {}", path.display());
+                            FileEvent {
+                                path: path.clone(),
+                                event_type: FileEventType::Deleted,
+                                timestamp: chrono::Utc::now(),
+                                process_info: None, // Process info not available for deleted files
+                            }
+                        }
+                        notify::event::Event::Rename(rename) => {
+                            debug!("File renamed: {} -> {}", 
+                                rename.from.display(), rename.to.display());
+                            FileEvent {
+                                path: rename.from.clone(),
+                                event_type: FileEventType::Renamed(rename.to.clone()),
+                                timestamp: chrono::Utc::now(),
+                                process_info: Self::get_process_info(&rename.to),
+                            }
+                        }
+                        _ => continue, // Skip other events
+                    };
+                    
+                    // Update statistics
+                    {
+                        let mut stats_guard = stats.lock().unwrap();
+                        stats_guard.events_processed += 1;
+                    }
+                    
+                    // Process the event with the callback
+                    match on_event(file_event) {
+                        EventAction::Continue => {
+                            // Continue monitoring
+                        }
+                        EventAction::Pause => {
+                            // Pause monitoring
+                            let mut state_guard = state.lock().unwrap();
+                            *state_guard = MonitorState::Paused;
+                            info!("Real-time monitor paused by event handler");
+                        }
+                        EventAction::Stop => {
+                            // Stop monitoring
+                            let mut state_guard = state.lock().unwrap();
+                            *state_guard = MonitorState::Stopped;
+                            info!("Real-time monitor stopped by event handler");
+                            break 'monitor_loop;
+                        }
+                    }
+                }
+                
+                info!("Real-time monitor thread exiting");
+            })
+            .map_err(|e| MonitorError::WatcherInitError(format!("Failed to spawn monitor thread: {}", e)))?;
+        
+        info!("Real-time monitor started successfully");
         Ok(())
     }
     
@@ -378,31 +448,103 @@ impl RealTimeMonitor {
         self.event_receiver.clone()
     }
     
-    /// Check if a file should be monitored based on extension and ignore paths
-    fn should_monitor_file(
-        path: &Path,
-        extensions_filter: &Arc<Vec<String>>,
-        ignore_paths: &Arc<Vec<PathBuf>>,
-    ) -> bool {
-        // Check if path is in ignore list
-        for ignore_path in ignore_paths.iter() {
-            if path.starts_with(ignore_path) {
+    /// Check if a file should be processed based on filters
+    fn should_process_file(path: &Path, filters: &Arc<Filters>) -> bool {
+        // Skip if path is a directory
+        if path.is_dir() {
+            return false;
+        }
+        
+        // Skip if path is in exclude list
+        for exclude in &filters.exclude_paths {
+            if path.starts_with(exclude) {
+                debug!("Skipping excluded path: {}", path.display());
                 return false;
             }
         }
         
-        // If no extension filter is set, monitor all files
-        if extensions_filter.is_empty() {
-            return true;
+        // Skip if path matches exclude patterns
+        for pattern in &filters.exclude_patterns {
+            if pattern.is_match(&path.display().to_string()) {
+                debug!("Skipping path matching exclude pattern: {}", path.display());
+                return false;
+            }
         }
         
-        // Check file extension
-        if let Some(ext) = path.extension() {
-            let ext_str = ext.to_string_lossy().to_lowercase();
-            extensions_filter.iter().any(|filter| &ext_str == filter)
-        } else {
-            false
+        // Skip if file is too large
+        if let Ok(metadata) = path.metadata() {
+            if metadata.len() > filters.max_file_size {
+                debug!("Skipping large file: {} ({} bytes)", path.display(), metadata.len());
+                return false;
+            }
         }
+        
+        // Check extension if filter is specified
+        if !filters.include_extensions.is_empty() {
+            if let Some(ext) = path.extension() {
+                let ext_str = ext.to_string_lossy().to_lowercase();
+                if !filters.include_extensions.iter().any(|e| e.to_lowercase() == ext_str) {
+                    return false;
+                }
+            } else {
+                // No extension, skip if we're filtering by extension
+                return false;
+            }
+        }
+        
+        true
+    }
+    
+    /// Get process information for a file event
+    #[cfg(target_os = "windows")]
+    fn get_process_info(path: &Path) -> Option<ProcessInfo> {
+        use std::process::Command;
+        
+        // Try to get process info using Windows Management Instrumentation
+        let output = Command::new("powershell")
+            .args(&[
+                "-Command",
+                &format!(
+                    "Get-WmiObject Win32_Process | Where-Object {{$_.CommandLine -like '*{}*'}} | Select-Object ProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json",
+                    path.display()
+                ),
+            ])
+            .output()
+            .ok()?;
+        
+        if !output.status.success() {
+            return None;
+        }
+        
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.trim().is_empty() {
+            return None;
+        }
+        
+        // Parse JSON output
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            // Check if array or single object
+            let process_obj = if value.is_array() {
+                value.get(0)?
+            } else {
+                &value
+            };
+            
+            // Extract fields
+            let pid = process_obj.get("ProcessId")?.as_u64()? as u32;
+            let name = process_obj.get("Name")?.as_str()?.to_string();
+            let path_str = process_obj.get("ExecutablePath")?.as_str()?;
+            let cmd_line = process_obj.get("CommandLine")?.as_str()?.to_string();
+            
+            return Some(ProcessInfo {
+                pid,
+                name,
+                path: PathBuf::from(path_str),
+                command_line: cmd_line,
+            });
+        }
+        
+        None
     }
     
     /// Add a path to the monitored paths
@@ -576,21 +718,21 @@ mod tests {
         let ignore_paths = Arc::new(vec![PathBuf::from("C:\\Windows\\Temp")]);
         
         // Should monitor .exe file
-        assert!(RealTimeMonitor::should_monitor_file(
+        assert!(RealTimeMonitor::should_process_file(
             &PathBuf::from("C:\\test.exe"),
             &extensions,
             &ignore_paths
         ));
         
         // Should not monitor .txt file
-        assert!(!RealTimeMonitor::should_monitor_file(
+        assert!(!RealTimeMonitor::should_process_file(
             &PathBuf::from("C:\\test.txt"),
             &extensions,
             &ignore_paths
         ));
         
         // Should not monitor file in ignore path
-        assert!(!RealTimeMonitor::should_monitor_file(
+        assert!(!RealTimeMonitor::should_process_file(
             &PathBuf::from("C:\\Windows\\Temp\\test.exe"),
             &extensions,
             &ignore_paths

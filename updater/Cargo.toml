@@ -1,8 +1,8 @@
 [package]
-name = "amaru-updater"
+name = "updater"
 version = "0.1.0"
 edition = "2021"
-authors = ["CripterHack"]
+authors = ["Amaru Security Team"]
 description = "Sistema de actualizaciones para Amaru Antivirus"
 license = "GPL-2.0"
 
