@@ -1,80 +1,147 @@
 {
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/1.0.0/tooling/cli/schema.json",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devPath": "http://localhost:5173",
-    "distDir": "../dist"
+    "devPath": "http://localhost:3000",
+    "distDir": "../dist",
+    "withGlobalTauri": true
   },
   "package": {
     "productName": "Amaru Antivirus",
-    "version": "0.1.0"
+    "version": "1.0.0"
   },
   "tauri": {
     "allowlist": {
       "all": false,
+      "fs": {
+        "all": false,
+        "readFile": true,
+        "writeFile": true,
+        "readDir": true,
+        "exists": true,
+        "scope": ["$APPDATA/*", "$RESOURCE/*"]
+      },
+      "window": {
+        "all": false,
+        "close": true,
+        "hide": true,
+        "show": true,
+        "maximize": true,
+        "minimize": true,
+        "unmaximize": true,
+        "unminimize": true,
+        "setIcon": true
+      },
       "shell": {
         "all": false,
         "open": true
       },
+      "dialog": {
+        "all": false,
+        "open": true,
+        "save": true
+      },
+      "process": {
+        "all": false,
+        "exit": true,
+        "relaunch": true
+      },
+      "system": {
+        "all": false,
+        "tray": true
+      },
       "notification": {
         "all": true
-      },
-      "window": {
-        "all": false,
-        "create": true,
-        "center": true,
-        "requestUserAttention": true,
-        "setResizable": true,
-        "setTitle": true,
-        "maximize": true,
-        "unmaximize": true,
-        "minimize": true,
-        "unminimize": true,
-        "show": true,
-        "hide": true,
-        "close": true,
-        "setDecorations": true,
-        "setAlwaysOnTop": true,
-        "setSize": true,
-        "setMinSize": true,
-        "setMaxSize": true,
-        "setPosition": true,
-        "setFullscreen": true,
-        "setFocus": true,
-        "setIcon": true,
-        "setSkipTaskbar": true,
-        "startDragging": true
-      },
-      "fs": {
-        "all": true,
-        "scope": ["**"]
       }
     },
     "bundle": {
       "active": true,
-      "targets": "all",
-      "identifier": "com.amaru.antivirus",
+      "category": "Security",
+      "copyright": "Copyright © 2025 Amaru Antivirus",
+      "deb": {
+        "depends": []
+      },
+      "externalBin": [],
       "icon": [
         "icons/32x32.png",
         "icons/128x128.png",
         "icons/128x128@2x.png",
         "icons/icon.icns",
         "icons/icon.ico"
-      ]
+      ],
+      "identifier": "com.amaru.antivirus",
+      "longDescription": "Amaru is an open-source antivirus for Windows with YARA-based detection, real-time protection, and advanced behavior analysis.",
+      "macOS": {
+        "entitlements": null,
+        "exceptionDomain": "",
+        "frameworks": [],
+        "providerShortName": null,
+        "signingIdentity": null
+      },
+      "resources": [
+        "signatures/*"
+      ],
+      "shortDescription": "Open-source antivirus for Windows",
+      "targets": "all",
+      "windows": {
+        "certificateThumbprint": null,
+        "digestAlgorithm": "sha256",
+        "timestampUrl": "",
+        "wix": {
+          "language": "en-US",
+          "template": "wix/main.wxs"
+        }
+      }
     },
     "security": {
       "csp": null
     },
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/CripterHack/Amaru/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": ""
+    },
     "windows": [
       {
         "fullscreen": false,
+        "height": 800,
         "resizable": true,
         "title": "Amaru Antivirus",
-        "width": 1024,
-        "height": 768,
+        "width": 1200,
         "minWidth": 800,
         "minHeight": 600
       }
+    ],
+    "systemTray": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false
+    },
+    "commands": [
+      "get_protection_status",
+      "enable_protection",
+      "disable_protection",
+      "toggle_protection",
+      "toggle_protection_feature",
+      "start_quick_scan",
+      "start_full_scan",
+      "scan_file",
+      "scan_directory",
+      "pause_scan",
+      "resume_scan",
+      "cancel_scan",
+      "get_scan_history",
+      "get_threat_statistics",
+      "update_signatures",
+      "get_quarantine_items",
+      "delete_quarantined_file",
+      "restore_quarantined_file",
+      "get_system_resources",
+      "get_activity_log"
     ]
   }
 } 
