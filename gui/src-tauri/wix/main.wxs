@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+    Id="*"
+    Name="Amaru Antivirus"
+    Language="1033"
+    Version="1.0.0"
+    Manufacturer="Amaru Project"
+    UpgradeCode="91d85f42-fb27-4cac-85e1-71fc08b039cc">
+    
+    <Package 
+      InstallerVersion="200" 
+      Compressed="yes" 
+      InstallScope="perMachine"
+      Comments="Windows Installer for Amaru Antivirus" 
+      Keywords="Antivirus,Security,YARA,Protection" 
+      Description="Amaru is an open-source antivirus for Windows with YARA-based detection, real-time protection, and advanced behavior analysis."
+      Manufacturer="Amaru Project" />
+    
+    <MajorUpgrade 
+      DowngradeErrorMessage="A newer version of [ProductName] is already installed." 
+      AllowSameVersionUpgrades="yes" />
+    <MediaTemplate EmbedCab="yes" />
+    
+    <!-- Disable repair option -->
+    <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
+    
+    <!-- Add to Windows Security Center -->
+    <Property Id="WSCINSTALLED" Value="1" />
+    
+    <!-- Ensure .NET Framework is installed -->
+    <PropertyRef Id="NETFRAMEWORK40FULL" />
+    <Condition Message="This application requires .NET Framework 4.0. Please install the .NET Framework then run this installer again.">
+      <![CDATA[Installed OR NETFRAMEWORK40FULL]]>
+    </Condition>
+    
+    <!-- Application icon -->
+    <Icon Id="ProductIcon" SourceFile="icons/icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
+    
+    <!-- Feature definition -->
+    <Feature Id="ProductFeature" Title="Amaru Antivirus" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="ApplicationShortcut" />
+      <ComponentRef Id="ApplicationShortcutDesktop" />
+      <ComponentRef Id="AutoStartRegistryEntry" />
+      <ComponentRef Id="SecurityCenterRegistryEntry" />
+    </Feature>
+    
+    <!-- UI -->
+    <UI>
+      <UIRef Id="WixUI_InstallDir" />
+      <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+      
+      <!-- Skip license dialog -->
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2">1</Publish>
+    </UI>
+    
+    <!-- Custom actions -->
+    <InstallExecuteSequence>
+      <Custom Action="StartService" After="InstallFinalize">(NOT Installed) OR (REINSTALL)</Custom>
+      <Custom Action="StopService" Before="RemoveFiles">(REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE)</Custom>
+    </InstallExecuteSequence>
+    
+    <!-- Custom actions to start/stop Windows service -->
+    <CustomAction Id="StartService" Directory="INSTALLFOLDER" ExeCommand='[SystemFolder]cmd.exe /c sc start amaru-service' Return="ignore" />
+    <CustomAction Id="StopService" Directory="INSTALLFOLDER" ExeCommand='[SystemFolder]cmd.exe /c sc stop amaru-service' Return="ignore" />
+    
+    <!-- Directory structure -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLFOLDER" Name="Amaru Antivirus">
+          <!-- Program files will be here -->
+          <Directory Id="SignaturesDir" Name="signatures">
+            <!-- Signatures will be here -->
+            <Directory Id="OfficialSignaturesDir" Name="official" />
+            <Directory Id="CustomSignaturesDir" Name="custom" />
+          </Directory>
+          <Directory Id="QuarantineDir" Name="quarantine" />
+        </Directory>
+      </Directory>
+      
+      <!-- Start Menu entries -->
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Amaru Antivirus" />
+      </Directory>
+      
+      <!-- Desktop shortcut -->
+      <Directory Id="DesktopFolder" Name="Desktop" />
+    </Directory>
+    
+    <!-- Components -->
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <!-- Main application components will be inserted here by WiX Toolset -->
+      <Component Id="QuarantineFolder" Guid="*">
+        <CreateFolder Directory="QuarantineDir">
+          <Permission User="Everyone" GenericAll="yes" />
+        </CreateFolder>
+      </Component>
+      
+      <Component Id="SignaturesFolders" Guid="*">
+        <CreateFolder Directory="OfficialSignaturesDir">
+          <Permission User="Everyone" GenericAll="yes" />
+        </CreateFolder>
+        <CreateFolder Directory="CustomSignaturesDir">
+          <Permission User="Everyone" GenericAll="yes" />
+        </CreateFolder>
+      </Component>
+    </ComponentGroup>
+    
+    <!-- Shortcuts -->
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="ApplicationShortcut" Guid="*">
+        <Shortcut 
+          Id="ApplicationStartMenuShortcut" 
+          Name="Amaru Antivirus" 
+          Description="Open-source antivirus for Windows" 
+          Target="[INSTALLFOLDER]amaru-antivirus.exe" 
+          WorkingDirectory="INSTALLFOLDER" />
+        
+        <RemoveFolder Id="CleanUpShortCut" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\AmaruAntivirus" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    
+    <!-- Desktop shortcut -->
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="ApplicationShortcutDesktop" Guid="*">
+        <Shortcut 
+          Id="ApplicationDesktopShortcut" 
+          Name="Amaru Antivirus" 
+          Description="Open-source antivirus for Windows" 
+          Target="[INSTALLFOLDER]amaru-antivirus.exe" 
+          WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\AmaruAntivirus" Name="desktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    
+    <!-- Autostart registry entry -->
+    <DirectoryRef Id="TARGETDIR">
+      <Component Id="AutoStartRegistryEntry" Guid="*">
+        <RegistryValue 
+          Root="HKLM" 
+          Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" 
+          Name="AmaruAntivirus" 
+          Value="&quot;[INSTALLFOLDER]amaru-antivirus.exe&quot; --minimized" 
+          Type="string" 
+          KeyPath="yes" />
+      </Component>
+      
+      <!-- Windows Security Center registry entries -->
+      <Component Id="SecurityCenterRegistryEntry" Guid="*">
+        <RegistryValue 
+          Root="HKLM" 
+          Key="SOFTWARE\Microsoft\Security Center\Provider\Amaru" 
+          Name="DisplayName" 
+          Value="Amaru Antivirus" 
+          Type="string" 
+          KeyPath="yes" />
+        <RegistryValue 
+          Root="HKLM" 
+          Key="SOFTWARE\Microsoft\Security Center\Provider\Amaru" 
+          Name="PathToSignedProductExe" 
+          Value="[INSTALLFOLDER]amaru-antivirus.exe" 
+          Type="string" />
+      </Component>
+    </DirectoryRef>
+  </Product>
+</Wix> 

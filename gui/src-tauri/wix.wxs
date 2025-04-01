@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" UpgradeCode="12345678-1234-1234-1234-123456789012" Name="Amaru Antivirus" Language="1033" Version="1.0.0" Manufacturer="Amaru Project" InstallScope="perMachine">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    
+    <Feature Id="ProductFeature" Title="Amaru Antivirus" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+    
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <UIRef Id="WixUI_InstallDir" />
+    
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLFOLDER" Name="Amaru Antivirus" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Amaru Antivirus" />
+      </Directory>
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="AppDataFolder" Name="Amaru" />
+      </Directory>
+    </Directory>
+    
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component>
+        <File Source="$(var.TargetPath)" KeyPath="amaru-antivirus.exe" />
+        <Shortcut Id="ApplicationStartMenuShortcut" Directory="ApplicationProgramsFolder" Name="Amaru Antivirus" WorkingDirectory="INSTALLFOLDER" Icon="ApplicationIcon.ico" Advertise="yes" />
+        <RegistryValue Root="HKLM" Key="Software\Amaru Antivirus" Name="InstallPath" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    
+    <Icon Id="ApplicationIcon.ico" SourceFile="icons\icon.ico" />
+  </Product>
+</Wix> 
