@@ -1,6 +1,6 @@
 # Sistema de Detección de Amaru Antivirus
 
-El sistema de detección de Amaru Antivirus representa el núcleo tecnológico de nuestra solución de seguridad, implementando múltiples capas de análisis para identificar y neutralizar amenazas de forma efectiva y con mínimo impacto en el rendimiento del sistema.
+El motor YARA de Amaru puede analizar archivos y búferes de memoria. La regresión de firmas contrasta 651 entradas EICAR y tres controles con YARA y YARA-X. La instalación en Windows 11, la detección de malware real y el coste de cada capa requieren evaluaciones propias. [Resultados por componente](../../status_development.md) · [Especificación del corpus](../technical/eicar-corpus.md)
 
 ## Índice
 
@@ -15,11 +15,11 @@ El sistema de detección de Amaru Antivirus representa el núcleo tecnológico d
 
 ## Fundamentos del Sistema de Detección
 
-El sistema de detección de Amaru opera bajo un principio de defensa multicapa que combina análisis estático, dinámico y basado en la nube para maximizar la capacidad de detección con mínimo impacto en el rendimiento.
+El diseño combina análisis estático, dinámico y basado en la nube. Las secciones de arquitectura, algoritmos y configuración describen el alcance previsto. La integración de reputación en la nube, modelos de aprendizaje y monitoreo post-ejecución sigue pendiente de validación.
 
 ### Arquitectura del Sistema
 
-El sistema de detección está compuesto por varios módulos interconectados:
+La arquitectura propuesta asigna una responsabilidad a cada módulo.
 
 - **Motor de Análisis Primario**: Evaluación rápida de bajo impacto
 - **Motor de Análisis Avanzado**: Análisis profundo para elementos sospechosos
@@ -39,7 +39,7 @@ El sistema de detección está compuesto por varios módulos interconectados:
 
 ## Tecnologías y Algoritmos
 
-Amaru implementa una amplia gama de tecnologías y algoritmos para proporcionar una protección integral contra todas las categorías de amenazas.
+Las firmas YARA y el análisis estático de ejecutables con Radare2 disponen de pruebas de componente. En la hoja de ruta figuran también las técnicas siguientes. [Validación de reglas](../technical/yara-x.md) · [Análisis estático](../../radare2-analyzer/README.md)
 
 ### Algoritmos Fundamentales
 
@@ -48,7 +48,7 @@ Amaru implementa una amplia gama de tecnologías y algoritmos para proporcionar 
 - **Emulación de Código**: Ejecución de código sospechoso en un entorno virtual controlado
 - **Análisis Estático de Código**: Descompilación y análisis estructural de archivos ejecutables
 
-### Algoritmos Avanzados (Nuevos)
+### Algoritmos avanzados previstos
 
 - **Detección por Redes Neuronales Convolucionales (CNN)**: Análisis visual de código malicioso estructurado como imágenes
 - **Transformadores de Secuencia**: Identificación de patrones secuenciales en comportamientos maliciosos
@@ -96,7 +96,7 @@ La precisión en la detección es fundamental para evitar tanto falsos positivos
 
 ## Gestión de Patrones de Malware
 
-El sistema de gestión de patrones permite detectar familias de malware y sus variantes, incluso cuando intentan evadir la detección mediante modificaciones.
+El objetivo de la gestión de patrones es reconocer familias y variantes. Para evaluar esa capacidad hacen falta muestras etiquetadas por familia y controles de software legítimo.
 
 ### Tecnologías de Reconocimiento de Patrones
 
@@ -121,7 +121,7 @@ El sistema de gestión de patrones permite detectar familias de malware y sus va
 
 ## Integración con otros Componentes
 
-El sistema de detección se integra perfectamente con otros componentes de Amaru Antivirus para proporcionar una protección holística.
+El diseño contempla las siguientes conexiones. La prueba de aceptación en Windows 11 debe recorrer el camino desde el evento de archivo hasta la decisión del motor y su acción sobre la amenaza.
 
 ### Interacción con Módulos
 
@@ -138,7 +138,7 @@ El sistema de detección se integra perfectamente con otros componentes de Amaru
 
 ## Configuración Avanzada
 
-Usuarios avanzados y administradores pueden personalizar el comportamiento del sistema de detección.
+Estas opciones y perfiles forman parte del diseño de configuración para administradores. La disponibilidad de cada ajuste depende de su integración con el servicio.
 
 ### Opciones Configurables
 
@@ -156,20 +156,18 @@ Usuarios avanzados y administradores pueden personalizar el comportamiento del s
 
 ## Evaluación y Benchmarks
 
-El sistema de detección de Amaru se somete regularmente a pruebas independientes para garantizar su efectividad.
+Los umbrales de esta sección son objetivos de evaluación. Aún falta publicar un informe que identifique versión, corpus, controles, configuración, hardware y resultados. La prueba EICAR comprueba una firma de ensayo y carece de valor estadístico para estimar la eficacia sobre amenazas reales.
 
-### Métricas de Rendimiento
+### Objetivos de rendimiento y precisión
 
-- **Tasa de Detección**: Superior al 99.7% en pruebas independientes
-- **Tasa de Falsos Positivos**: Menos de 0.001% en software legítimo común
-- **Tiempo de Respuesta**: Detección en tiempo real con latencia inferior a 100ms
-- **Impacto en Rendimiento**: Menos del 2% en operaciones típicas del sistema
+- **Tasa de Detección**: Objetivo superior al 99,7 % en un corpus representativo de amenazas etiquetadas
+- **Tasa de Falsos Positivos**: Objetivo inferior al 0,001 % en un corpus documentado de software legítimo
+- **Tiempo de Respuesta**: Objetivo de latencia inferior a 100 ms desde el evento de archivo hasta el veredicto
+- **Impacto en Rendimiento**: Objetivo inferior al 2 % frente a la misma carga sin análisis
 
 ### Comparativas
 
-- **Evaluaciones AV-TEST**: Puntuaciones consistentemente altas en protección, rendimiento y usabilidad
-- **Certificaciones AV-Comparatives**: Certificado Advanced+ en detección en el mundo real
-- **Pruebas MITRE ATT&CK**: Cobertura extensa de técnicas de ataque avanzadas
+El proyecto contempla la evaluación de protección, rendimiento y usabilidad con AV-TEST, la clasificación Advanced+ de AV-Comparatives como meta y la medición de cobertura por técnica MITRE ATT&CK. Una atribución de puntuación o certificación requiere el informe público del evaluador, la fecha y la versión evaluada. Estas referencias quedan pendientes.
 
 ## Preguntas Frecuentes
 
@@ -183,7 +181,7 @@ Los nuevos algoritmos están diseñados para minimizar el impacto en el rendimie
 
 ### ¿Cómo se mantienen actualizados los patrones de malware?
 
-Los patrones se actualizan mediante:
+Las reglas disponibles se mantienen con el código. El actualizador de reglas comprueba la firma y la integridad de los archivos descargados. La operación continua del servicio y la siguiente política de suministro forman parte del diseño. [Guía de actualizaciones](./updates.md)
 - Actualizaciones automáticas varias veces al día
 - Inteligencia de amenazas en tiempo real desde la nube
 - Análisis de amenazas emergentes por nuestro laboratorio de seguridad
@@ -191,19 +189,15 @@ Los patrones se actualizan mediante:
 
 ### ¿Puedo confiar en que no habrá falsos positivos con mis aplicaciones?
 
-Aunque ningún sistema de detección puede garantizar cero falsos positivos, Amaru:
-- Mantiene una extensa base de datos de software legítimo
-- Implementa verificación múltiple antes de tomar acciones
-- Permite fácilmente reportar y resolver falsos positivos
-- Aprende continuamente de los patrones de uso legitimados por el usuario
+Tres controles negativos pasaron la prueba EICAR. Para estimar falsos positivos en aplicaciones reales hace falta un conjunto representativo de software legítimo. La hoja de ruta contempla reputación, verificación múltiple y aprendizaje por retroalimentación. Puedes comunicar un caso indicando la versión y la regla que coincidió. [Soporte](../support/contact.md)
 
 ### ¿Cómo detecta Amaru amenazas nunca vistas antes (zero-day)?
 
-La detección de amenazas desconocidas se logra mediante:
+Las técnicas previstas para evaluar amenazas desconocidas incluyen las siguientes. Su eficacia frente a amenazas de día cero queda por medir.
 - Análisis heurístico avanzado
-- Algoritmos de aprendizaje automático entrenados con millones de muestras
+- Aprendizaje automático con un objetivo de entrenamiento a escala de millones de muestras
 - Detección de comportamientos anómalos
-- Emulación y sandbox para observar comportamiento sospechoso sin riesgo
+- Emulación en un entorno aislado para observar el comportamiento
 
 ---
 

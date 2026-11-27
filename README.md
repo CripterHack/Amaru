@@ -13,8 +13,7 @@ Analogy: Coils around and neutralizes threats.
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 ![Windows 11 Support](https://img.shields.io/badge/Windows-11-0078D4?logo=windows)
-![Build Status](https://img.shields.io/github/workflow/status/CripterHack/Amaru/CI)
-![Version](https://img.shields.io/github/v/release/CripterHack/Amaru)
+[![Validation](https://github.com/CripterHack/Amaru/actions/workflows/validation.yml/badge.svg)](https://github.com/CripterHack/Amaru/actions/workflows/validation.yml)
 
 ---
 
@@ -22,7 +21,7 @@ Analogy: Coils around and neutralizes threats.
 Amaru is a community-driven fork of ClamWin, supercharged with modern malware detection capabilities:
 - **Real-time protection** via Rust-native file monitoring
 - **Heuristic analysis** using YARA rules and Radare2 static analysis
-- **Low resource consumption** thanks to Rust-optimized modules
+- **Low resource consumption** is a design goal. Windows 11 performance measurements are pending.
 - **Modern UI** built with Tauri + Svelte + TailwindCSS
 
 Designed for users who value transparency, customization, and Windows 11 compatibility.
@@ -30,9 +29,12 @@ Designed for users who value transparency, customization, and Windows 11 compati
 ---
 
 ## ✨ Key Features
+
+These features define the Windows 11 product scope. Implementation and validation progress vary by component. See the [development status](status_development.md).
+
 | **Feature**               | **Technology**          | **Description**                                      |
 |--------------------------|-------------------------|---------------------------------------------------|
-| Real-Time File Monitoring | `notify-rs` + ClamAV    | Watches file changes and scans instantly            |
+| Real-Time File Monitoring | `notify-rs` + ClamAV    | Routes file change events to the scanner            |
 | YARA Rule Engine         | YARA 4.3+              | Detects malware patterns with custom/signed rules   |
 | Static Analysis          | Radare2                | Examines PE headers, sections, and suspicious strings|
 | Low-Level Performance    | Rust                   | Memory-safe modules for scanning and hooks          |
@@ -57,91 +59,53 @@ Designed for users who value transparency, customization, and Windows 11 compati
 - Admin privileges
 
 ### Developer Requirements
-- Rust toolchain (1.70 or later)
-- Node.js 18 or later (for UI development)
+- Rust MSVC toolchain 1.89 or later (the secure logger uses standard-library file locking)
+- Node.js 22 LTS and npm for the desktop frontend
 - Visual Studio Build Tools with C++ workload
-- Git for Windows
+- Git for Windows and NSIS 3 for packaging
+- Microsoft Edge WebView2 Runtime for the installed desktop application
 
 ---
 
 ## 📥 Installation
 
-### End User Installation
-1. Download the latest release from the [Releases page](https://github.com/CripterHack/Amaru/releases).
-2. Run the installer with administrator privileges.
-3. Follow the on-screen instructions to complete the installation.
+### Release availability
 
-### Manual Installation
-1. Install the required dependencies (YARA 4.3+ and Radare2).
-2. Download the pre-built binary package.
-3. Extract to your desired location.
-4. Run `amaru-setup.exe` to configure the service components.
+There is no published stable release as of 2026-11-27. Successful Windows application workflow runs publish a development installer from the tested revision for 14 days. See the [Windows build runs](https://github.com/CripterHack/Amaru/actions/workflows/windows-build.yml) and [release history](https://github.com/CripterHack/Amaru/releases).
 
 ### Developer Installation
-1. **Install Rust:**
-   ```powershell
-   winget install Rustlang.Rust.MSVC
-   rustup toolchain install nightly
-   rustup default nightly
-   ```
 
-2. **Install Dependencies:**
-   ```powershell
-   # Install Radare2
-   winget install radare.radare2
-   
-   # Install YARA (4.3+)
-   # Download from https://github.com/VirusTotal/yara/releases
-   
-   # For UI development
-   winget install OpenJS.NodeJS.LTS
-   ```
+On a Windows x64 development machine with the prerequisites above, run the following commands in PowerShell.
 
-3. **Clone and Build:**
-   ```powershell
-   git clone https://github.com/CripterHack/Amaru.git
-   cd Amaru
-   
-   # Build backend
-   cargo build --release
-   
-   # Build GUI
-   cd gui
-   npm install
-   npm run build
-   
-   # Build complete package
-   cd ..
-   cargo run --bin amaru-packager
-   ```
+```powershell
+git clone https://github.com/CripterHack/Amaru.git
+cd Amaru
+cargo test --locked -p amaru --all-targets
+.\scripts\package.ps1
+```
 
-4. **Configure:**
-   ```powershell
-   copy .env.example .env
-   # Edit .env with your settings
-   ```
+The script builds the CLI, Tauri desktop executable and bundled Svelte assets from the same checkout. It writes `target/x86_64-pc-windows-msvc/release/AmaruAV-Setup.exe`. Install into the default protected Program Files location to register the Windows service. The installer preserves configuration and user data on upgrade. Packaging prerequisites, switches and the isolated installation test are documented in the [installer guide](installer/README.md).
 
-5. **Run Examples:**
-   ```powershell
-   # Run the EICAR test file detection example
-   cargo run --example eicar_detection
-   
-   # Run other examples
-   cargo run --example use_core_services
-   ```
+The CLI reads `config.toml` next to the executable when present. Pass `--config <path>` to use a different file. Install Radare2 for optional static analysis. Cargo builds the vendored classic YARA library. The standalone YARA-X tool has its own [setup and verification procedure](docs/technical/yara-x.md).
+
+```powershell
+cargo run --locked --example eicar_detection
+cargo run --locked --example use_core_services
+```
 
 ---
 
 ## 🚀 Usage
 
 ### GUI Interface
-The most user-friendly way to interact with Amaru is through its graphical interface:
+The desktop application supports the following workflows.
+
 1. Launch Amaru from the Start menu or desktop shortcut.
 2. Use the dashboard to view protection status and recent events.
-3. Schedule scans and configure protection settings through the Settings page.
+3. Open Scan configuration to choose quick scan folders and schedule a daily or weekly scan. Results appear in the scan history for the signed-in account.
 
 ### Command Line Interface
-Amaru provides a powerful command-line interface for advanced users and automation:
+Use `scan` to check files or directories and `analyze` for a detailed report on one file. Scans are recursive by default. Pass `--recursive=false` for a single directory level or `--heuristic=false` to disable heuristics explicitly. Detailed analysis requests Radare2 by default and accepts `--radare2=false` to use the built-in engines alone. Use `--config <path>` to select a TOML configuration.
 
 ```powershell
 # Scan a specific file
@@ -159,15 +123,18 @@ amaru update --rules
 # Analyze a suspicious file with detailed reporting
 amaru analyze --file C:\suspicious\file.exe --radare2 --heuristic
 
-# Test detection capabilities with EICAR test file
-amaru test-eicar
-
 # Check service status
 amaru service --action status
 ```
 
+A signed rules update requires a configured server and a trusted Ed25519 public key in `update_config.public_key`. Use `update --clamav` to run the installed ClamAV `freshclam` utility, and `reload --rules` to ask the active Windows service to reload its on-disk rules. Built-in heuristic patterns ship with the application.
+
+The bundled rules are in [signatures/official](signatures/official) and [signatures/custom](signatures/custom). For an on-demand scan with the optional YARA-X tool, see the [command, output and exit codes](docs/technical/yara-x.md).
+
+The `amaru test-eicar` command loads the configured rules and checks the EICAR signature and a clean control. Acceptance on a packaged Windows build is pending. See the [EICAR corpus specification](docs/technical/eicar-corpus.md).
+
 ### Windows Service
-Amaru runs as a Windows service for real-time protection:
+The service interface specifies the following administrator commands. Installation, startup and status reporting still require end-to-end verification on Windows 11.
 
 ```powershell
 # Install the service (admin privileges required)
@@ -184,7 +151,7 @@ amaru service --action status
 ```
 
 ### Scheduling
-Configure scheduled scans with the built-in scheduler:
+Use Scan configuration to schedule quick scans for the current Windows account. The CLI also accepts a fixed file or directory for a daily or weekly task. A fixed scheduled location leaves the manual quick scan folders unchanged. Use `amaru schedule --status` to inspect the task and `amaru schedule --disable` to remove it.
 
 ```powershell
 # Schedule a daily scan at 3 AM
@@ -197,6 +164,8 @@ amaru schedule --weekly --day Sunday --time "02:00" --path "C:\"
 ---
 
 ## 🛡️ Security Features
+
+The following protection capabilities describe the design scope. End-to-end validation on Windows 11 is pending.
 
 ### Real-time Protection
 - **File System Monitoring:** Detects and scans files as they're created or modified
@@ -251,10 +220,10 @@ npm run dev
 ### Building from Source
 ```powershell
 # Build release version
-cargo build --release
+cargo build --locked --release
 
-# Build installer
-cargo run --bin amaru-installer-builder
+# Inspect the available workspace targets
+cargo metadata --no-deps --format-version 1
 
 # Run tests
 cargo test --all
@@ -263,16 +232,21 @@ cargo test --all
 cargo doc --open
 ```
 
+The Windows installer has its own NSIS build process and requires a validated application executable. See the [installer instructions](installer/README.md).
+
 ### Testing
+
+For a cross-platform check of the shipped signatures, run the standalone [YARA and YARA-X corpus tests](docs/technical/eicar-corpus.md). Windows integration targets are exercised separately with Cargo.
+
 ```powershell
 # Run unit tests
 cargo test
 
 # Run integration tests
-cargo test --test '*'
+cargo test --workspace --tests
 
 # Run specific test
-cargo test --test scan_test
+cargo test --test amaru_core_tests
 ```
 
 ### Debugging
@@ -302,7 +276,7 @@ This project is licensed under the GNU General Public License v2.0 - see the [LI
 - [Open an issue](https://github.com/CripterHack/Amaru/issues) for bug reports or feature requests
 
 ## 🔄 Contributing
-Contributions are welcome! Please check the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines.
+To propose a change, describe the expected behavior and how you will verify it in a [project issue](https://github.com/CripterHack/Amaru/issues). Include the actual checks and their results in the pull request. See the [contribution guidelines](CONTRIBUTING.md).
 
 ---
 

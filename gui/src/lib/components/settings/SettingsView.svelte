@@ -21,7 +21,7 @@
   const saveChanges = async () => {
     try {
       // Aquí llamaríamos a una función para guardar la configuración
-      await configStore.save();
+      await configStore.saveConfig();
       
       // Mostrar notificación de éxito
       antivirusStore.addNotification({

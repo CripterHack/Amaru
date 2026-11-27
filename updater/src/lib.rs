@@ -1,14 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
-use serde::{Serialize, Deserialize};
-use tokio::fs as tokio_fs;
-use ed25519_dalek::{Verifier, VerifyingKey};
-use sha2::{Sha256, Digest};
+use std::io::{self, ErrorKind};
+use std::path::{Path, PathBuf};
+
+use ed25519_dalek::{Signature as Ed25519Signature, VerifyingKey};
+use fs2::FileExt;
+use semver::Version;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tempfile::Builder;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum UpdateError {
+    #[error("Actualización inválida: {0}")]
+    Invalid(String),
     #[error("Error de red: {0}")]
     Network(#[from] reqwest::Error),
     #[error("Error de firma: {0}")]
@@ -19,29 +25,29 @@ pub enum UpdateError {
     Deserialize(#[from] serde_json::Error),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleUpdate {
-    version: String,
-    timestamp: u64,
-    rules: Vec<RuleFile>,
-    signatures: Vec<Signature>,
-    rollback_version: Option<String>,
+    pub version: String,
+    pub timestamp: u64,
+    pub rules: Vec<RuleFile>,
+    pub signatures: Vec<Signature>,
+    pub rollback_version: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleFile {
-    path: String,
-    hash: String,
-    url: String,
+    pub path: String,
+    pub hash: String,
+    pub url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signature {
-    file_path: String,
-    signature: Vec<u8>,
+    pub file_path: String,
+    pub signature: Vec<u8>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateManifest {
     current_version: String,
     available_version: String,
@@ -57,10 +63,16 @@ pub struct Updater {
 }
 
 impl Updater {
-    pub fn new(rules_dir: impl Into<PathBuf>, backup_dir: impl Into<PathBuf>, public_key: &[u8]) -> Result<Self, UpdateError> {
-        let public_key = VerifyingKey::from_bytes(public_key)
-            .map_err(|e| UpdateError::Signature(e.to_string()))?;
-        
+    pub fn new(
+        rules_dir: impl Into<PathBuf>,
+        backup_dir: impl Into<PathBuf>,
+        public_key: &[u8],
+    ) -> Result<Self, UpdateError> {
+        let bytes = public_key
+            .try_into()
+            .map_err(|_| UpdateError::Signature("Se requieren 32 bytes de clave pública".into()))?;
+        let public_key =
+            VerifyingKey::from_bytes(bytes).map_err(|e| UpdateError::Signature(e.to_string()))?;
         Ok(Self {
             rules_dir: rules_dir.into(),
             backup_dir: backup_dir.into(),
@@ -69,189 +81,314 @@ impl Updater {
         })
     }
 
-    pub async fn check_updates(&self, manifest_url: &str) -> Result<Option<RuleUpdate>, UpdateError> {
-        let manifest: UpdateManifest = self.client
-            .get(manifest_url)
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        let current_version = self.get_current_version()?;
-        if manifest.available_version <= current_version {
+    pub async fn check_updates(
+        &self,
+        manifest_url: &str,
+    ) -> Result<Option<RuleUpdate>, UpdateError> {
+        // The existing format signs rule bytes. HTTPS authenticates the descriptor,
+        // including the filenames, URLs and version that the signatures do not cover.
+        let metadata_client = reqwest::Client::builder().https_only(true).build()?;
+        let manifest: UpdateManifest = serde_json::from_slice(
+            &download(&metadata_client, manifest_url, MAX_DESCRIPTOR_BYTES).await?,
+        )?;
+        if version(&manifest.available_version)? <= self.current_version()? {
             return Ok(None);
         }
-
-        let update: RuleUpdate = self.client
-            .get(&manifest.update_url)
-            .send()
-            .await?
-            .json()
-            .await?;
-
+        let update: RuleUpdate = serde_json::from_slice(
+            &download(&metadata_client, &manifest.update_url, MAX_DESCRIPTOR_BYTES).await?,
+        )?;
+        update.validate_structure()?;
+        if update.version != manifest.available_version {
+            return Err(UpdateError::Invalid(
+                "Las versiones del manifiesto y del paquete difieren".into(),
+            ));
+        }
         Ok(Some(update))
     }
 
+    /// Install a descriptor obtained through the trusted metadata channel.
     pub async fn apply_update(&self, update: RuleUpdate) -> Result<(), UpdateError> {
-        // Crear backup antes de actualizar
-        let backup_path = self.create_backup().await?;
+        self.apply_update_checked(update, |_| Ok(())).await
+    }
 
-        // Verificar firmas
-        self.verify_signatures(&update)?;
+    /// Validate the authenticated, complete candidate before replacing the installed tree.
+    pub async fn apply_update_checked(
+        &self,
+        update: RuleUpdate,
+        validate: impl FnOnce(&Path) -> Result<(), UpdateError>,
+    ) -> Result<(), UpdateError> {
+        let signatures = update.validated_signatures()?;
+        let target_version = version(&update.version)?;
+        let root_name = self
+            .rules_dir
+            .file_name()
+            .ok_or_else(|| UpdateError::Invalid("Directorio de reglas inválido".into()))?;
+        let parent = self
+            .rules_dir
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)?;
+        let parent = fs::canonicalize(parent)?;
+        let live = parent.join(root_name);
+        let mut state_name = root_name.to_os_string();
+        state_name.push(".amaru-update");
+        let state = parent.join(state_name);
+        fs::create_dir_all(&state)?;
+        check_entry(&state)?;
 
-        // Descargar y aplicar nuevas reglas
+        // A persistent lock file serializes independent service processes.
+        let _lock = UpdateLock::acquire(&state.join("lock"))?;
+        let previous = state.join("previous");
+        if previous.exists() {
+            if live.exists() {
+                fs::remove_dir_all(&previous)?;
+            } else {
+                fs::rename(&previous, &live)?;
+            }
+        }
+        if target_version <= self.current_version()? {
+            return Err(UpdateError::Invalid(
+                "La versión instalada ya es igual o más reciente".into(),
+            ));
+        }
+        fs::create_dir_all(&live)?;
+        check_entry(&live)?;
+        fs::create_dir_all(&self.backup_dir)?;
+        let backups = fs::canonicalize(&self.backup_dir)?;
+        if backups.starts_with(&live) || backups.starts_with(&state) {
+            return Err(UpdateError::Invalid(
+                "Los backups deben estar fuera del árbol de reglas y de preparación".into(),
+            ));
+        }
+
+        // Build the complete replacement on the same volume before changing live files.
+        let staging = Builder::new().prefix("staging-").tempdir_in(&state)?;
+        let replacement = staging.path().join("rules");
+        copy_tree(&live, &replacement)?;
         for rule in &update.rules {
-            let content = self.client
-                .get(&rule.url)
-                .send()
-                .await?
-                .bytes()
-                .await?;
-
-            // Verificar hash
-            let mut hasher = Sha256::new();
-            hasher.update(&content);
-            let hash = format!("{:x}", hasher.finalize());
-            if hash != rule.hash {
-                self.rollback(backup_path).await?;
-                return Err(UpdateError::Signature("Hash no coincide".into()));
+            let name = rule_path(&rule.path)?;
+            let content = download(&self.client, &rule.url, MAX_RULE_BYTES).await?;
+            if hex::encode(Sha256::digest(&content)) != rule.hash {
+                return Err(UpdateError::Signature(format!(
+                    "Hash incorrecto para {name}"
+                )));
             }
-
-            let rule_path = self.rules_dir.join(&rule.path);
-            if let Some(parent) = rule_path.parent() {
-                tokio_fs::create_dir_all(parent).await?;
-            }
-            tokio_fs::write(rule_path, content).await?;
-        }
-
-        // Actualizar versión
-        self.save_version(&update.version)?;
-
-        Ok(())
-    }
-
-    async fn create_backup(&self) -> Result<PathBuf, UpdateError> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        
-        let backup_path = self.backup_dir.join(format!("backup_{}", timestamp));
-        tokio_fs::create_dir_all(&backup_path).await?;
-        
-        let mut stack = vec![self.rules_dir.clone()];
-        while let Some(dir) = stack.pop() {
-            let entries = fs::read_dir(dir)?;
-            for entry in entries {
-                let entry = entry?;
-                let path = entry.path();
-                let relative = path.strip_prefix(&self.rules_dir).unwrap();
-                let backup_file = backup_path.join(relative);
-
-                if path.is_dir() {
-                    stack.push(path);
-                    tokio_fs::create_dir_all(backup_file).await?;
-                } else {
-                    tokio_fs::copy(&path, backup_file).await?;
-                }
-            }
-        }
-
-        Ok(backup_path)
-    }
-
-    async fn rollback(&self, backup_path: PathBuf) -> Result<(), UpdateError> {
-        // Limpiar directorio actual
-        let mut stack = vec![self.rules_dir.clone()];
-        while let Some(dir) = stack.pop() {
-            let entries = fs::read_dir(dir)?;
-            for entry in entries {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path.clone());
-                }
-                tokio_fs::remove_file(path).await?;
-            }
-        }
-
-        // Restaurar desde backup
-        let mut stack = vec![backup_path.clone()];
-        while let Some(dir) = stack.pop() {
-            let entries = fs::read_dir(dir)?;
-            for entry in entries {
-                let entry = entry?;
-                let path = entry.path();
-                let relative = path.strip_prefix(&backup_path).unwrap();
-                let restore_path = self.rules_dir.join(relative);
-
-                if path.is_dir() {
-                    stack.push(path);
-                    tokio_fs::create_dir_all(restore_path).await?;
-                } else {
-                    tokio_fs::copy(&path, restore_path).await?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn verify_signatures(&self, update: &RuleUpdate) -> Result<(), UpdateError> {
-        for signature in &update.signatures {
-            let file_path = self.rules_dir.join(&signature.file_path);
-            let content = fs::read(&file_path)?;
-            
             self.public_key
-                .verify(&content, &signature.signature.as_slice().try_into().unwrap())
+                .verify_strict(&content, &signatures[&name])
+                .map_err(|_| UpdateError::Signature(format!("Firma incorrecta para {name}")))?;
+            let dest = replacement.join(name);
+            fs::create_dir_all(dest.parent().expect("path under replacement"))?;
+            fs::write(dest, &content)?;
+        }
+        fs::write(replacement.join("version.txt"), &update.version)?;
+
+        validate(&replacement)?;
+        let backup = Builder::new().prefix("backup_").tempdir_in(backups)?;
+        copy_tree(&live, backup.path())?;
+        fs::rename(&live, &previous)?;
+        if let Err(error) = fs::rename(&replacement, &live) {
+            fs::rename(&previous, &live)?;
+            return Err(error.into());
+        }
+        let _ = backup.into_path();
+        if let Err(error) = fs::remove_dir_all(&previous) {
+            log::warn!("La copia anterior queda pendiente de limpieza: {error}");
+        }
+        Ok(())
+    }
+
+    fn current_version(&self) -> Result<Version, UpdateError> {
+        match fs::read_to_string(self.rules_dir.join("version.txt")) {
+            Ok(text) => version(text.trim()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Version::new(0, 0, 0)),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RULE_BYTES: usize = 100 * 1024 * 1024;
+
+async fn download(
+    client: &reqwest::Client,
+    url: &str,
+    limit: usize,
+) -> Result<Vec<u8>, UpdateError> {
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    let mut content = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > limit - content.len() {
+            return Err(UpdateError::Invalid(format!(
+                "La descarga supera el límite de {limit} bytes"
+            )));
+        }
+        content.extend_from_slice(&chunk);
+    }
+    Ok(content)
+}
+
+struct UpdateLock(fs::File);
+
+impl UpdateLock {
+    fn acquire(path: &Path) -> io::Result<Self> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        FileExt::try_lock_exclusive(&file)?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for UpdateLock {
+    fn drop(&mut self) {
+        // On Unix a concurrent fork can retain a copy of this open file description
+        // until exec. Closing our descriptor alone can then delay the next update.
+        if let Err(error) = FileExt::unlock(&self.0) {
+            log::warn!("Error al liberar el bloqueo de actualización: {error}");
+        }
+    }
+}
+
+fn version(text: &str) -> Result<Version, UpdateError> {
+    Version::parse(text).map_err(|e| UpdateError::Invalid(e.to_string()))
+}
+
+impl RuleUpdate {
+    /// Checks package structure. Authenticity is verified against each download during installation.
+    pub fn validate_structure(&self) -> Result<(), UpdateError> {
+        self.validated_signatures().map(|_| ())
+    }
+
+    fn validated_signatures(&self) -> Result<HashMap<String, Ed25519Signature>, UpdateError> {
+        let mut signatures = HashMap::new();
+        let mut names = std::collections::HashSet::new();
+        for rule in &self.rules {
+            let name = rule_path(&rule.path)?;
+            if !names.insert(name.to_lowercase()) {
+                return Err(UpdateError::Invalid(format!("Ruta duplicada: {name}")));
+            }
+        }
+        for entry in &self.signatures {
+            let name = rule_path(&entry.file_path)?;
+            let signature = Ed25519Signature::from_slice(&entry.signature)
                 .map_err(|e| UpdateError::Signature(e.to_string()))?;
+            if signatures.insert(name, signature).is_some() {
+                return Err(UpdateError::Signature("Firma duplicada".into()));
+            }
         }
-        Ok(())
-    }
-
-    fn get_current_version(&self) -> Result<String, UpdateError> {
-        let version_file = self.rules_dir.join("version.txt");
-        if !version_file.exists() {
-            return Ok("0.0.0".to_string());
+        if self.rules.is_empty() || signatures.len() != self.rules.len() {
+            return Err(UpdateError::Signature(
+                "Se requiere una firma por regla".into(),
+            ));
         }
-        Ok(fs::read_to_string(version_file)?.trim().to_string())
+        for rule in &self.rules {
+            if !signatures.contains_key(&rule_path(&rule.path)?) {
+                return Err(UpdateError::Signature(format!(
+                    "Falta la firma de {}",
+                    rule.path
+                )));
+            }
+        }
+        Ok(signatures)
     }
+}
 
-    fn save_version(&self, version: &str) -> Result<(), UpdateError> {
-        let version_file = self.rules_dir.join("version.txt");
-        fs::write(version_file, version)?;
-        Ok(())
+// Normalize earlier packages created by Windows while rejecting Windows aliases
+// on every host so a package resolves to the same files on each system.
+fn rule_path(raw: &str) -> Result<String, UpdateError> {
+    let name = raw.replace('\\', "/");
+    for part in name.split('/') {
+        let stem = part
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .trim_end()
+            .to_ascii_uppercase();
+        if part.is_empty()
+            || part.ends_with(['.', ' '])
+            || part.contains([':', '*', '?', '"', '<', '>', '|'])
+            || part.chars().any(char::is_control)
+            || matches!(
+                stem.as_str(),
+                "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+            )
+            || ["COM", "LPT"].iter().any(|prefix| {
+                stem.strip_prefix(prefix).is_some_and(|n| {
+                    matches!(
+                        n,
+                        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                    )
+                })
+            })
+        {
+            return Err(UpdateError::Invalid(format!(
+                "Ruta de firma inválida: {raw}"
+            )));
+        }
     }
+    match Path::new(&name).extension().and_then(|ext| ext.to_str()) {
+        Some("yar" | "yara") => Ok(name),
+        _ => Err(UpdateError::Invalid(format!(
+            "Extensión de regla inválida: {raw}"
+        ))),
+    }
+}
+
+fn check_entry(path: &Path) -> io::Result<fs::Metadata> {
+    let metadata = fs::symlink_metadata(path)?;
+    #[cfg(windows)]
+    let reparse_point = {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let reparse_point = false;
+    if reparse_point || !(metadata.is_file() || metadata.is_dir()) {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            format!("Entrada no regular: {}", path.display()),
+        ));
+    }
+    Ok(metadata)
+}
+
+fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    let mut pending = vec![(from.to_owned(), to.to_owned())];
+    while let Some((source, destination)) = pending.pop() {
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let file = entry.path();
+            let target = destination.join(entry.file_name());
+            if check_entry(&file)?.is_dir() {
+                fs::create_dir(&target)?;
+                pending.push((file, target));
+            } else {
+                fs::copy(file, target)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
-    use tokio;
 
-    #[tokio::test]
-    async fn test_backup_and_rollback() -> Result<(), UpdateError> {
-        let rules_dir = tempdir()?;
-        let backup_dir = tempdir()?;
-        let test_file = rules_dir.path().join("test.yar");
-        
-        fs::write(&test_file, "rule test {}")?;
+    #[test]
+    fn update_lock_releases_even_if_another_descriptor_remains_open() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lock");
+        let lock = UpdateLock::acquire(&path)?;
+        let _duplicate = lock.0.try_clone()?;
+        assert!(UpdateLock::acquire(&path).is_err());
 
-        let public_key = [0u8; 32];
-        let updater = Updater::new(
-            rules_dir.path(),
-            backup_dir.path(),
-            &public_key
-        )?;
-
-        let backup_path = updater.create_backup().await?;
-        fs::remove_file(&test_file)?;
-        updater.rollback(backup_path).await?;
-
-        assert!(test_file.exists());
-        assert_eq!(fs::read_to_string(&test_file)?, "rule test {}");
-
+        drop(lock);
+        let _next_update = UpdateLock::acquire(&path)?;
         Ok(())
     }
-} 
+}

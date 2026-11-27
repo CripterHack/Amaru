@@ -4,10 +4,13 @@ import { resolve } from 'path';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [svelte({ hot: !process.env.VITEST })],
+  plugins: [svelte()],
   resolve: {
+    ...(process.env.VITEST && { conditions: ['browser'] }),
     alias: {
-      '@': resolve(__dirname, './src')
+      '@': resolve(__dirname, './src'),
+      '$lib': resolve(__dirname, './src/lib'),
+      '$components': resolve(__dirname, './src/lib/components')
     }
   },
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -35,8 +38,5 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['tests/**/*.test.ts'],
     setupFiles: ['./tests/setup.ts'],
-    deps: {
-      inline: ['@tauri-apps/api']
-    },
   },
 }); 

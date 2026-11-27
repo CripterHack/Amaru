@@ -1,37 +1,37 @@
-use std::path::{Path, PathBuf};
-use std::fs::File;
-use std::io::{self, Read, BufReader};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::{self, File, OpenOptions},
+    io::{self, BufReader, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
-use log::{error, info, warn, debug};
-use sha2::{Sha256, Digest};
-use serde::{Serialize, Deserialize};
-use tokio::sync::Mutex;
+use log::{error, info};
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::time;
-
-use crate::AmaruError;
+use tokio::{task, time};
 
 /// Error relacionado con la verificación de integridad
 #[derive(Error, Debug)]
 pub enum IntegrityError {
     #[error("I/O error: {0}")]
     IoError(#[from] io::Error),
-    
+
     #[error("Hash mismatch for file {0}: expected {1}, got {2}")]
     HashMismatch(String, String, String),
-    
+
     #[error("File not found: {0}")]
     FileNotFound(String),
-    
+
     #[error("Failed to serialize/deserialize data: {0}")]
     SerializationError(String),
-    
+
     #[error("File has been tampered: {0}")]
     TamperedFile(String),
-    
+
     #[error("Internal integrity check error: {0}")]
     InternalError(String),
 }
@@ -50,7 +50,7 @@ pub enum IntegrityStatus {
 }
 
 /// Contains integrity data for a single file
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileIntegrityData {
     /// SHA-256 hash of the file
     pub hash: String,
@@ -83,316 +83,435 @@ impl IntegrityDatabase {
     }
 }
 
-/// Manages file integrity verification
-pub struct IntegrityManager {
-    /// Base directory for the application
-    base_dir: PathBuf,
-    /// Database of file integrity information
-    database: Arc<Mutex<IntegrityDatabase>>,
-    /// Path to the integrity database file
+impl Default for IntegrityDatabase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IntegrityDatabase {
+    fn load(path: &Path) -> Result<Self, IntegrityError> {
+        let file = File::open(path)?;
+        serde_json::from_reader(BufReader::new(file))
+            .map_err(|e| IntegrityError::SerializationError(e.to_string()))
+    }
+
+    // Publish a whole, flushed database on the same volume. The caller holds the
+    // writer lock from before loading the previous generation through replacement.
+    fn save(&self, path: &Path) -> Result<(), IntegrityError> {
+        let serialized = serde_json::to_vec_pretty(self)
+            .map_err(|e| IntegrityError::SerializationError(e.to_string()))?;
+        let temporary = path.with_extension(format!("json.{:016x}.tmp", rand::random::<u64>()));
+        let mut file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let result = (|| {
+            file.write_all(&serialized)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+        Ok(result?)
+    }
+}
+
+struct PeriodicCheck {
+    handle: task::JoinHandle<()>,
+    critical_only: bool,
+    interval: Duration,
+}
+
+struct IntegrityState {
     database_path: PathBuf,
-    /// Whether periodic checks are enabled
-    periodic_checks_enabled: bool,
-    /// Interval between periodic checks
-    check_interval: Duration,
-    /// List of critical files to monitor
-    critical_files: Vec<PathBuf>,
+    baselines: RwLock<HashMap<String, FileIntegrityData>>,
+    critical_files: Mutex<HashSet<PathBuf>>,
+    interval: Mutex<Duration>,
+    periodic: Mutex<Option<PeriodicCheck>>,
+}
+
+impl Drop for IntegrityState {
+    fn drop(&mut self) {
+        if let Some(check) = self.periodic.get_mut().take() {
+            check.handle.abort();
+        }
+    }
+}
+
+/// Manages the SHA-256 baselines in `security/integrity.json`.
+#[derive(Clone)]
+pub struct IntegrityManager {
+    state: Arc<IntegrityState>,
+}
+
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, IntegrityError> + Send + 'static,
+) -> Result<T, IntegrityError> {
+    task::spawn_blocking(work)
+        .await
+        .map_err(|e| IntegrityError::InternalError(e.to_string()))?
+}
+
+fn lock_writer(path: &Path) -> io::Result<File> {
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path.with_extension("lock"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+fn file_data(path: &Path, is_critical: bool) -> Result<FileIntegrityData, IntegrityError> {
+    let mut file = File::open(path)?;
+    let before = file.metadata()?;
+    if !before.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Expected a regular file").into());
+    }
+    let mut hasher = Sha256::new();
+    let size = io::copy(&mut file, &mut hasher)?;
+    let after = file.metadata()?;
+    let last_modified = after.modified()?;
+    if before.len() != size || after.len() != size || before.modified()? != last_modified {
+        return Err(IntegrityError::InternalError(format!(
+            "File changed while calculating SHA-256: {}",
+            path.display()
+        )));
+    }
+    Ok(FileIntegrityData {
+        hash: format!("{:x}", hasher.finalize()),
+        size,
+        last_modified,
+        is_critical,
+    })
+}
+
+fn path_key(path: &Path) -> Result<&str, IntegrityError> {
+    path.to_str().ok_or_else(|| {
+        IntegrityError::InternalError(format!(
+            "Path cannot be represented in the integrity database: {:?}",
+            path
+        ))
+    })
+}
+
+fn verify(
+    path: &Path,
+    expected: Option<&FileIntegrityData>,
+) -> Result<IntegrityStatus, IntegrityError> {
+    let Some(expected) = expected else {
+        return Ok(if path.try_exists()? {
+            IntegrityStatus::Unknown
+        } else {
+            IntegrityStatus::Missing
+        });
+    };
+    match file_data(path, expected.is_critical) {
+        Ok(actual) if actual.hash == expected.hash => Ok(IntegrityStatus::Valid),
+        Ok(_) => Ok(IntegrityStatus::Tampered),
+        Err(IntegrityError::IoError(e)) if e.kind() == io::ErrorKind::NotFound => {
+            Ok(IntegrityStatus::Missing)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 impl IntegrityManager {
-    /// Creates a new integrity manager
+    /// Opens the existing baseline or creates an empty database for a new installation.
     pub async fn new<P: AsRef<Path>>(base_dir: P) -> Result<Self, IntegrityError> {
-        let base_dir = base_dir.as_ref().to_path_buf();
-        let database_dir = base_dir.join("security");
-        let database_path = database_dir.join("integrity.json");
-        
-        // Ensure the security directory exists
-        std::fs::create_dir_all(&database_dir)
-            .map_err(|e| IntegrityError::IoError(e))?;
-        
-        // Try to load the existing database or create a new one
-        let database = if database_path.exists() {
-            let file = File::open(&database_path)
-                .map_err(|e| IntegrityError::IoError(e))?;
-            let reader = BufReader::new(file);
-            serde_json::from_reader(reader)
-                .map_err(|e| IntegrityError::SerializationError(e.to_string()))?
-        } else {
-            IntegrityDatabase::new()
-        };
-        
-        Ok(IntegrityManager {
-            base_dir,
-            database: Arc::new(Mutex::new(database)),
-            database_path,
-            periodic_checks_enabled: false,
-            check_interval: Duration::from_secs(3600), // Default: check every hour
-            critical_files: Vec::new(),
+        let directory = base_dir.as_ref().join("security");
+        let (database_path, baselines) = blocking(move || {
+            fs::create_dir_all(&directory)?;
+            let path = directory.join("integrity.json");
+            let _writer = lock_writer(&path)?;
+            let database = match IntegrityDatabase::load(&path) {
+                Err(IntegrityError::IoError(e)) if e.kind() == io::ErrorKind::NotFound => {
+                    let empty = IntegrityDatabase::new();
+                    empty.save(&path)?;
+                    empty
+                }
+                result => result?,
+            };
+            Ok((path, database.files))
+        })
+        .await?;
+        Ok(Self {
+            state: Arc::new(IntegrityState {
+                database_path,
+                baselines: RwLock::new(baselines),
+                critical_files: Mutex::new(HashSet::new()),
+                interval: Mutex::new(Duration::from_secs(3600)),
+                periodic: Mutex::new(None),
+            }),
         })
     }
-    
-    /// Sets the interval for periodic integrity checks
+
+    /// Sets the interval used on the next call to `start_periodic_check`.
     pub fn set_check_interval(&mut self, interval: Duration) {
-        self.check_interval = interval;
+        *self.state.interval.lock() = interval;
     }
-    
-    /// Adds a file to the critical files list
+
+    /// Includes the path in critical checks even if a baseline is still missing.
     pub fn add_critical_file<P: AsRef<Path>>(&mut self, path: P) {
-        self.critical_files.push(path.as_ref().to_path_buf());
+        self.state
+            .critical_files
+            .lock()
+            .insert(path.as_ref().to_owned());
     }
-    
-    /// Calculates the SHA-256 hash of a file
-    pub async fn calculate_file_hash<P: AsRef<Path>>(&self, path: P) -> Result<String, IntegrityError> {
-        let path = path.as_ref();
-        let mut file = File::open(path)
-            .map_err(|e| IntegrityError::IoError(e))?;
-        
-        let mut hasher = Sha256::new();
-        let mut buffer = [0; 1024 * 1024]; // 1MB buffer
-        
-        loop {
-            let bytes_read = file.read(&mut buffer)
-                .map_err(|e| IntegrityError::IoError(e))?;
-            
-            if bytes_read == 0 {
-                break;
+
+    pub async fn calculate_file_hash<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<String, IntegrityError> {
+        let path = path.as_ref().to_owned();
+        blocking(move || Ok(file_data(&path, false)?.hash)).await
+    }
+
+    pub async fn register_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+        is_critical: bool,
+    ) -> Result<(), IntegrityError> {
+        let path = path.as_ref().to_owned();
+        let state = self.state.clone();
+        blocking(move || {
+            let _writer = lock_writer(&state.database_path)?;
+            let mut database = IntegrityDatabase::load(&state.database_path)?;
+            // Another manager may register new paths. Changes to previously
+            // trusted baselines require reopening before this manager can write.
+            if state
+                .baselines
+                .read()
+                .iter()
+                .any(|(name, old)| database.files.get(name) != Some(old))
+            {
+                return Err(IntegrityError::TamperedFile(
+                    state.database_path.display().to_string(),
+                ));
             }
-            
-            hasher.update(&buffer[..bytes_read]);
-        }
-        
-        let hash = hasher.finalize();
-        Ok(format!("{:x}", hash))
+            let data = match file_data(&path, is_critical) {
+                Err(IntegrityError::IoError(e)) if e.kind() == io::ErrorKind::NotFound => {
+                    return Err(IntegrityError::FileNotFound(path.display().to_string()));
+                }
+                other => other?,
+            };
+            let name = path_key(&path)?.to_owned();
+            database.files.insert(name.clone(), data.clone());
+            database.last_updated = SystemTime::now();
+            database.save(&state.database_path)?;
+            state.baselines.write().insert(name, data);
+            info!(
+                "Registered file for integrity monitoring: {}",
+                path.display()
+            );
+            Ok(())
+        })
+        .await
     }
-    
-    /// Registers a file for integrity monitoring
-    pub async fn register_file<P: AsRef<Path>>(&self, path: P, is_critical: bool) -> Result<(), IntegrityError> {
-        let path = path.as_ref();
-        
-        // Ensure the file exists
-        if !path.exists() {
-            return Err(IntegrityError::FileNotFound(
-                path.to_string_lossy().to_string()
+
+    pub async fn verify_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<IntegrityStatus, IntegrityError> {
+        let path = path.as_ref().to_owned();
+        let expected = self.state.baselines.read().get(path_key(&path)?).cloned();
+        blocking(move || verify(&path, expected.as_ref())).await
+    }
+
+    pub async fn verify_all_files(
+        &self,
+    ) -> HashMap<String, Result<IntegrityStatus, IntegrityError>> {
+        self.verify_files(false).await
+    }
+
+    pub async fn verify_critical_files(
+        &self,
+    ) -> HashMap<String, Result<IntegrityStatus, IntegrityError>> {
+        self.verify_files(true).await
+    }
+
+    async fn verify_files(
+        &self,
+        critical_only: bool,
+    ) -> HashMap<String, Result<IntegrityStatus, IntegrityError>> {
+        let state = self.state.clone();
+        let mut paths = self.state.critical_files.lock().clone();
+        let result = blocking(move || {
+            let baselines = state.baselines.read().clone();
+            paths.extend(
+                baselines
+                    .iter()
+                    .filter(|(_, data)| !critical_only || data.is_critical)
+                    .map(|(name, _)| PathBuf::from(name)),
+            );
+            let mut results = HashMap::new();
+            for path in paths {
+                let name = path_key(&path)?;
+                results.insert(name.to_owned(), verify(&path, baselines.get(name)));
+            }
+            Ok(results)
+        })
+        .await;
+        result.unwrap_or_else(|err| {
+            HashMap::from([(self.state.database_path.display().to_string(), Err(err))])
+        })
+    }
+
+    pub async fn start_periodic_check(&self, critical_only: bool) -> Result<(), IntegrityError> {
+        let duration = *self.state.interval.lock();
+        if duration.is_zero() {
+            return Err(IntegrityError::InternalError(
+                "Integrity check interval must be positive".into(),
             ));
         }
-        
-        let metadata = path.metadata()
-            .map_err(|e| IntegrityError::IoError(e))?;
-        
-        let hash = self.calculate_file_hash(path).await?;
-        let size = metadata.len();
-        let last_modified = metadata.modified()
-            .map_err(|e| IntegrityError::IoError(e))?;
-        
-        let integrity_data = FileIntegrityData {
-            hash,
-            size,
-            last_modified,
-            is_critical,
-        };
-        
-        // Update the database
-        let path_str = path.to_string_lossy().to_string();
-        
-        {
-            let mut db = self.database.lock().await;
-            db.files.insert(path_str.clone(), integrity_data);
-            db.last_updated = SystemTime::now();
-        }
-        
-        self.save_database().await?;
-        
-        info!("Registered file for integrity monitoring: {}", path_str);
-        Ok(())
-    }
-    
-    /// Verifies the integrity of a single file
-    pub async fn verify_file<P: AsRef<Path>>(&self, path: P) -> Result<IntegrityStatus, IntegrityError> {
-        let path = path.as_ref();
-        let path_str = path.to_string_lossy().to_string();
-        
-        // Check if the file exists
-        if !path.exists() {
-            return Ok(IntegrityStatus::Missing);
-        }
-        
-        // Check if we have a record for this file
-        let expected_hash = {
-            let db = self.database.lock().await;
-            match db.files.get(&path_str) {
-                Some(data) => data.hash.clone(),
-                None => return Ok(IntegrityStatus::Unknown),
+        let mut periodic = self.state.periodic.lock();
+        if let Some(running) = periodic.as_ref() {
+            if !running.handle.is_finished()
+                && running.critical_only == critical_only
+                && running.interval == duration
+            {
+                return Ok(());
             }
-        };
-        
-        // Calculate the current hash
-        let current_hash = self.calculate_file_hash(path).await?;
-        
-        // Compare hashes
-        if current_hash == expected_hash {
-            debug!("Integrity check passed for file: {}", path_str);
-            Ok(IntegrityStatus::Valid)
-        } else {
-            warn!("Integrity check failed for file: {}. Hash mismatch!", path_str);
-            Ok(IntegrityStatus::Tampered)
+            running.handle.abort();
         }
-    }
-    
-    /// Verifies the integrity of all registered files
-    pub async fn verify_all_files(&self) -> HashMap<String, Result<IntegrityStatus, IntegrityError>> {
-        let mut results = HashMap::new();
-        
-        let file_paths = {
-            let db = self.database.lock().await;
-            db.files.keys().cloned().collect::<Vec<_>>()
-        };
-        
-        for path in file_paths {
-            let result = self.verify_file(&path).await;
-            results.insert(path, result);
-        }
-        
-        results
-    }
-    
-    /// Verifies only critical files
-    pub async fn verify_critical_files(&self) -> HashMap<String, Result<IntegrityStatus, IntegrityError>> {
-        let mut results = HashMap::new();
-        
-        let file_paths = {
-            let db = self.database.lock().await;
-            db.files.iter()
-                .filter(|(_, data)| data.is_critical)
-                .map(|(path, _)| path.clone())
-                .collect::<Vec<_>>()
-        };
-        
-        for path in file_paths {
-            let result = self.verify_file(&path).await;
-            results.insert(path, result);
-        }
-        
-        results
-    }
-    
-    /// Saves the integrity database to disk
-    async fn save_database(&self) -> Result<(), IntegrityError> {
-        let db = self.database.lock().await;
-        let json = serde_json::to_string_pretty(&*db)
-            .map_err(|e| IntegrityError::SerializationError(e.to_string()))?;
-        
-        std::fs::write(&self.database_path, json)
-            .map_err(|e| IntegrityError::IoError(e))?;
-        
-        Ok(())
-    }
-    
-    /// Starts periodic integrity checks in the background
-    pub async fn start_periodic_check(&mut self, critical_only: bool) -> Result<(), IntegrityError> {
-        self.periodic_checks_enabled = true;
-        
-        let database = Arc::clone(&self.database);
-        let check_interval = self.check_interval;
-        let manager = self.clone();
-        
-        tokio::spawn(async move {
-            let mut interval = time::interval(check_interval);
-            
+        let weak = Arc::downgrade(&self.state);
+        let handle = task::spawn(async move {
+            let mut ticks = time::interval(duration);
+            ticks.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
             loop {
-                interval.tick().await;
-                
-                if !manager.periodic_checks_enabled {
-                    break;
-                }
-                
-                info!("Running periodic integrity check");
-                
-                let results = if critical_only {
-                    manager.verify_critical_files().await
-                } else {
-                    manager.verify_all_files().await
-                };
-                
-                // Log any issues found
-                for (path, result) in &results {
+                ticks.tick().await;
+                let Some(state) = weak.upgrade() else { break };
+                let results = Self { state }.verify_files(critical_only).await;
+                for (path, result) in results {
                     match result {
-                        Ok(IntegrityStatus::Tampered) => {
-                            error!("INTEGRITY VIOLATION: File has been tampered: {}", path);
-                            // Here you could trigger alerts or other protective actions
-                        },
-                        Ok(IntegrityStatus::Missing) => {
-                            error!("INTEGRITY VIOLATION: Critical file is missing: {}", path);
-                            // Here you could trigger alerts or other protective actions
-                        },
-                        Err(e) => {
-                            error!("Error checking integrity of {}: {}", path, e);
-                        },
-                        _ => {} // Valid or Unknown statuses don't need special handling
+                        Ok(IntegrityStatus::Valid) => {}
+                        Ok(status) => error!("Integrity check for {path}: {status:?}"),
+                        Err(err) => error!("Error checking integrity of {path}: {err}"),
                     }
                 }
             }
         });
-        
+        *periodic = Some(PeriodicCheck {
+            handle,
+            critical_only,
+            interval: duration,
+        });
         Ok(())
     }
-    
-    /// Stops periodic integrity checks
-    pub fn stop_periodic_check(&mut self) {
-        self.periodic_checks_enabled = false;
-    }
-    
-    /// Creates a clone of self that can be moved to a different thread
-    pub fn clone(&self) -> Self {
-        IntegrityManager {
-            base_dir: self.base_dir.clone(),
-            database: Arc::clone(&self.database),
-            database_path: self.database_path.clone(),
-            periodic_checks_enabled: self.periodic_checks_enabled,
-            check_interval: self.check_interval,
-            critical_files: self.critical_files.clone(),
+
+    pub fn stop_periodic_check(&self) {
+        if let Some(running) = self.state.periodic.lock().take() {
+            running.handle.abort();
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    
+
     #[tokio::test]
     async fn test_calculate_hash() {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("test_file.txt");
-        
+
         fs::write(&file_path, "test content").unwrap();
-        
+
         let manager = IntegrityManager::new(temp_dir.path()).await.unwrap();
         let hash = manager.calculate_file_hash(&file_path).await.unwrap();
-        
+
         // The expected hash for "test content"
         let expected_hash = "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72";
-        
+
         assert_eq!(hash, expected_hash);
     }
-    
+
     #[tokio::test]
     async fn test_register_and_verify_file() {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("test_file.txt");
-        
+
         fs::write(&file_path, "test content").unwrap();
-        
+
         let manager = IntegrityManager::new(temp_dir.path()).await.unwrap();
         manager.register_file(&file_path, true).await.unwrap();
-        
+
         let status = manager.verify_file(&file_path).await.unwrap();
         assert_eq!(status, IntegrityStatus::Valid);
-        
+
         // Modify the file
         fs::write(&file_path, "modified content").unwrap();
-        
+
         let status = manager.verify_file(&file_path).await.unwrap();
         assert_eq!(status, IntegrityStatus::Tampered);
     }
-} 
+
+    #[tokio::test]
+    async fn concurrent_registrations_survive_reopening() {
+        let dir = tempdir().unwrap();
+        let first = IntegrityManager::new(dir.path()).await.unwrap();
+        let second = IntegrityManager::new(dir.path()).await.unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        fs::write(&a, b"first").unwrap();
+        fs::write(&b, b"second").unwrap();
+        let (x, y) = tokio::join!(
+            first.register_file(&a, true),
+            second.register_file(&b, false)
+        );
+        x.unwrap();
+        y.unwrap();
+        let reopened = IntegrityManager::new(dir.path()).await.unwrap();
+        assert_eq!(
+            reopened.verify_file(&a).await.unwrap(),
+            IntegrityStatus::Valid
+        );
+        assert_eq!(
+            reopened.verify_file(&b).await.unwrap(),
+            IntegrityStatus::Valid
+        );
+        assert_eq!(reopened.verify_critical_files().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn corrupted_database_cannot_replace_trusted_baseline() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("original.txt");
+        fs::write(&path, "original").unwrap();
+        let manager = IntegrityManager::new(dir.path()).await.unwrap();
+        manager.register_file(&path, true).await.unwrap();
+        fs::write(&path, "changed").unwrap();
+        let database = dir.path().join("security/integrity.json");
+        fs::write(&database, "{ incomplete").unwrap();
+        assert!(manager.register_file(&path, true).await.is_err());
+        assert_eq!(
+            manager.verify_file(&path).await.unwrap(),
+            IntegrityStatus::Tampered
+        );
+        assert!(IntegrityManager::new(dir.path()).await.is_err());
+        assert_eq!(fs::read_to_string(&database).unwrap(), "{ incomplete");
+    }
+
+    #[tokio::test]
+    async fn clones_share_one_periodic_task() {
+        let dir = tempdir().unwrap();
+        let manager = IntegrityManager::new(dir.path()).await.unwrap();
+        let mut cloned = manager.clone();
+        manager.start_periodic_check(true).await.unwrap();
+        let task_id = manager.state.periodic.lock().as_ref().unwrap().handle.id();
+        cloned.start_periodic_check(true).await.unwrap();
+        assert_eq!(
+            cloned.state.periodic.lock().as_ref().unwrap().handle.id(),
+            task_id
+        );
+        cloned.stop_periodic_check();
+        assert!(manager.state.periodic.lock().is_none());
+        cloned.set_check_interval(Duration::ZERO);
+        assert!(manager.start_periodic_check(true).await.is_err());
+    }
+}

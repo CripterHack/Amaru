@@ -9,7 +9,21 @@ export interface ProtectionStatus {
   version: string | null;
 }
 
+export interface ScanProgress {
+  id: string;
+  currentFile: string;
+  filesScanned: number;
+  filesSkipped: number;
+  filesFailed: number;
+  threatsFound: number;
+  elapsedMs: number;
+}
+
 export interface ScanRecord {
+  status?: 'completed' | 'partial' | 'cancelled';
+  files_failed?: number;
+  files_skipped?: number;
+  last_error?: string | null;
   id: string;
   scan_type: string;
   start_time: string;
@@ -22,6 +36,7 @@ export interface ScanRecord {
 }
 
 export interface ThreatEntry {
+  session_id?: string;
   id: string;
   name: string;
   path: string;

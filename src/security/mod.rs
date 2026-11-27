@@ -6,37 +6,35 @@
 // - Secure logging with integrity verification
 
 // Export submodules
-pub mod integrity;
 pub mod digital_signature;
-pub mod tamper_protection;
+pub mod integrity;
 pub mod secure_logging;
+pub mod tamper_protection;
 
 // Re-export key types and errors
-pub use integrity::{IntegrityManager, IntegrityError, IntegrityStatus};
 pub use digital_signature::{DigitalSignature, SignatureError, SignatureInfo};
-pub use tamper_protection::{TamperProtection, TamperProtectionError, FileStatus, ImportanceLevel};
-pub use secure_logging::{SecureLogger, SecureLoggingError, SensitivityLevel};
+pub use integrity::{IntegrityError, IntegrityManager, IntegrityStatus};
+pub use secure_logging::{SecureLogger, SecureLoggerBackend, SecureLoggingError, SensitivityLevel};
+pub use tamper_protection::{FileStatus, ImportanceLevel, TamperProtection, TamperProtectionError};
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
-use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 use thiserror::Error;
-use log::{info, warn, error};
 
 #[derive(Error, Debug)]
 pub enum SecurityError {
     #[error("Integrity error: {0}")]
     IntegrityError(#[from] integrity::IntegrityError),
-    
+
     #[error("Signature error: {0}")]
     SignatureError(#[from] digital_signature::SignatureError),
-    
+
     #[error("Tamper protection error: {0}")]
     TamperProtectionError(#[from] tamper_protection::TamperProtectionError),
-    
+
     #[error("Secure logging error: {0}")]
     LoggingError(#[from] secure_logging::SecureLoggingError),
-    
+
     #[error("Internal security error: {0}")]
     InternalError(String),
 }
@@ -61,77 +59,78 @@ pub struct SecurityCheckResult {
 /// Security manager for the application
 pub struct SecurityManager {
     /// Integrity manager
-    integrity_manager: integrity::IntegrityManager,
+    integrity_manager: Arc<integrity::IntegrityManager>,
     /// Tamper protection
     tamper_protection: tamper_protection::TamperProtection,
     /// Secure logger
     secure_logger: secure_logging::SecureLogger,
-    /// Base directory
-    base_dir: PathBuf,
 }
 
 impl SecurityManager {
     /// Creates a new security manager
     pub async fn new<P: AsRef<Path>>(base_dir: P) -> Result<Self, SecurityError> {
         let base_dir = base_dir.as_ref().to_path_buf();
-        
-        // Create necessary directories
-        let integrity_dir = base_dir.join("security/integrity");
+
         let security_dir = base_dir.join("security");
-        let logs_dir = base_dir.join("logs");
-        
-        std::fs::create_dir_all(&integrity_dir)
-            .map_err(|e| SecurityError::InternalError(format!("Failed to create integrity directory: {}", e)))?;
-        
-        std::fs::create_dir_all(&security_dir)
-            .map_err(|e| SecurityError::InternalError(format!("Failed to create security directory: {}", e)))?;
-        
-        std::fs::create_dir_all(&logs_dir)
-            .map_err(|e| SecurityError::InternalError(format!("Failed to create logs directory: {}", e)))?;
-        
-        // Initialize components
-        let integrity_manager = integrity::IntegrityManager::new(&base_dir).await
-            .map_err(|e| SecurityError::IntegrityError(e))?;
-        
-        let tamper_protection = tamper_protection::TamperProtection::new(&base_dir).await
-            .map_err(|e| SecurityError::TamperProtectionError(e))?;
-        
-        let secure_logger = secure_logging::SecureLogger::new(&base_dir, None).await
-            .map_err(|e| SecurityError::LoggingError(e))?;
-        
+        let integrity_manager = Arc::new(integrity::IntegrityManager::new(&base_dir).await?);
+        let tamper_protection = tamper_protection::TamperProtection::new(
+            Arc::clone(&integrity_manager),
+            &security_dir,
+            Some(security_dir.join("tamper.key")),
+        )
+        .await?;
+        let secure_logger = secure_logging::SecureLogger::new(&base_dir, None).await?;
+
         Ok(SecurityManager {
             integrity_manager,
             tamper_protection,
             secure_logger,
-            base_dir,
         })
     }
-    
+
     /// Verifies the integrity of a file
-    pub async fn verify_file_integrity<P: AsRef<Path>>(&self, path: P) -> Result<integrity::IntegrityStatus, SecurityError> {
-        self.integrity_manager.verify_file(path).await
-            .map_err(|e| SecurityError::IntegrityError(e))
+    pub async fn verify_file_integrity<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<integrity::IntegrityStatus, SecurityError> {
+        self.integrity_manager
+            .verify_file(path)
+            .await
+            .map_err(SecurityError::IntegrityError)
     }
-    
+
     /// Verifies the digital signature of a file
     pub fn verify_file_signature<P: AsRef<Path>>(&self, path: P) -> Result<bool, SecurityError> {
         let signature = digital_signature::DigitalSignature::new();
-        signature.verify_signature(path)
-            .map_err(|e| SecurityError::SignatureError(e))
+        signature
+            .verify_signature(path)
+            .map_err(SecurityError::SignatureError)
     }
-    
+
     /// Registers a file for tamper protection
-    pub async fn protect_file<P: AsRef<Path>>(&self, path: P, importance: tamper_protection::ImportanceLevel) -> Result<(), SecurityError> {
-        self.tamper_protection.protect_file(path, importance).await
-            .map_err(|e| SecurityError::TamperProtectionError(e))
+    pub async fn protect_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+        importance: tamper_protection::ImportanceLevel,
+    ) -> Result<(), SecurityError> {
+        self.tamper_protection
+            .protect_file(path, importance)
+            .await
+            .map_err(SecurityError::TamperProtectionError)
     }
-    
+
     /// Registers a file for integrity monitoring
-    pub async fn register_file_for_integrity<P: AsRef<Path>>(&self, path: P, is_critical: bool) -> Result<(), SecurityError> {
-        self.integrity_manager.register_file(path, is_critical).await
-            .map_err(|e| SecurityError::IntegrityError(e))
+    pub async fn register_file_for_integrity<P: AsRef<Path>>(
+        &self,
+        path: P,
+        is_critical: bool,
+    ) -> Result<(), SecurityError> {
+        self.integrity_manager
+            .register_file(path, is_critical)
+            .await
+            .map_err(SecurityError::IntegrityError)
     }
-    
+
     /// Logs a secure message with integrity protection
     pub async fn log_secure_message(
         &self,
@@ -141,24 +140,35 @@ impl SecurityManager {
         location: &str,
         sensitivity: secure_logging::SensitivityLevel,
     ) -> Result<(), SecurityError> {
-        self.secure_logger.log(level, message, module, location, sensitivity).await
-            .map_err(|e| SecurityError::LoggingError(e))
+        self.secure_logger
+            .log(level, message, module, location, sensitivity)
+            .await
+            .map_err(SecurityError::LoggingError)
     }
-    
+
     /// Starts security services
     pub async fn start_security_services(&mut self) -> Result<(), SecurityError> {
         // Start integrity checks
-        let mut integrity_manager = self.integrity_manager.clone();
-        integrity_manager.start_periodic_check(true).await
-            .map_err(|e| SecurityError::IntegrityError(e))?;
-        
+        self.integrity_manager
+            .start_periodic_check(true)
+            .await
+            .map_err(SecurityError::IntegrityError)?;
+
         // Start tamper protection
-        self.tamper_protection.start_protection().await
-            .map_err(|e| SecurityError::TamperProtectionError(e))?;
-        
+        self.tamper_protection
+            .start()
+            .await
+            .map_err(SecurityError::TamperProtectionError)?;
+
         Ok(())
     }
-    
+
+    pub async fn stop_security_services(&self) -> Result<(), SecurityError> {
+        self.integrity_manager.stop_periodic_check();
+        self.tamper_protection.stop().await?;
+        Ok(())
+    }
+
     /// Performs a full security check
     pub async fn perform_security_check(&self) -> Result<SecurityCheckResult, SecurityError> {
         let mut result = SecurityCheckResult {
@@ -169,72 +179,93 @@ impl SecurityManager {
             tamper_failures: Vec::new(),
             log_integrity_failures: Vec::new(),
         };
-        
+
         // Check critical files integrity
         let integrity_results = self.integrity_manager.verify_critical_files().await;
-        
+
         for (path, check_result) in integrity_results {
-            match check_result {
-                Ok(integrity::IntegrityStatus::Valid) => {}
-                Ok(integrity::IntegrityStatus::Tampered) => {
-                    result.integrity_check_passed = false;
-                    result.integrity_failures.push(path);
-                }
-                Ok(integrity::IntegrityStatus::Missing) => {
-                    result.integrity_check_passed = false;
-                    result.integrity_failures.push(path);
-                }
-                _ => {}
+            if !matches!(check_result, Ok(integrity::IntegrityStatus::Valid)) {
+                result.integrity_check_passed = false;
+                result.integrity_failures.push(path);
             }
         }
-        
-        // Check tamper protection
-        let tamper_results = self.tamper_protection.verify_all_files().await;
-        
-        for (path, check_result) in tamper_results {
-            match check_result {
-                Ok(tamper_protection::FileStatus::Valid) | Ok(tamper_protection::FileStatus::Modified) => {}
-                Ok(tamper_protection::FileStatus::Tampered) => {
-                    result.tamper_check_passed = false;
-                    result.tamper_failures.push(path);
-                }
-                Ok(tamper_protection::FileStatus::Missing) => {
-                    result.tamper_check_passed = false;
-                    result.tamper_failures.push(path);
-                }
-                Err(_) => {
-                    result.tamper_check_passed = false;
-                    result.tamper_failures.push(path);
-                }
+
+        for (path, status) in self.tamper_protection.verify_all_files().await {
+            if !matches!(status, Ok(FileStatus::Valid | FileStatus::Modified)) {
+                result.tamper_check_passed = false;
+                result.tamper_failures.push(path);
             }
         }
-        
+
         // Check log integrity
-        let log_integrity = self.secure_logger.verify_log_integrity(&self.secure_logger.current_log_file).await
-            .map_err(|e| SecurityError::LoggingError(e))?;
-        
-        if !log_integrity {
-            result.log_integrity_passed = false;
-            result.log_integrity_failures.push(
-                self.secure_logger.current_log_file.to_string_lossy().to_string()
-            );
+        for (path, valid) in self.secure_logger.verify_all_logs().await? {
+            if !valid {
+                result.log_integrity_passed = false;
+                result
+                    .log_integrity_failures
+                    .push(path.display().to_string());
+            }
         }
-        
+
         Ok(result)
     }
-    
+
     /// Gets a reference to the secure logger
     pub fn secure_logger(&self) -> &secure_logging::SecureLogger {
         &self.secure_logger
     }
-    
+
     /// Gets a reference to the integrity manager
     pub fn integrity_manager(&self) -> &integrity::IntegrityManager {
         &self.integrity_manager
     }
-    
+
     /// Gets a reference to the tamper protection
     pub fn tamper_protection(&self) -> &tamper_protection::TamperProtection {
         &self.tamper_protection
     }
-} 
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn persistent_protection_reports_changes_until_explicitly_registered() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("protected.bin");
+        std::fs::write(&file, b"approved").unwrap();
+        let mut manager = SecurityManager::new(dir.path()).await.unwrap();
+        manager.protect_file(&file, 95).await.unwrap();
+        manager.start_security_services().await.unwrap();
+        manager.start_security_services().await.unwrap();
+        manager.stop_security_services().await.unwrap();
+        drop(manager);
+
+        let manager = SecurityManager::new(dir.path()).await.unwrap();
+        std::fs::write(&file, b"modified").unwrap();
+        for _ in 0..2 {
+            let check = manager.perform_security_check().await.unwrap();
+            assert!(!check.integrity_check_passed);
+            assert!(!check.tamper_check_passed);
+            assert!(check.log_integrity_passed);
+        }
+        manager.protect_file(&file, 95).await.unwrap();
+        assert!(
+            manager
+                .perform_security_check()
+                .await
+                .unwrap()
+                .tamper_check_passed
+        );
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(
+            manager
+                .tamper_protection()
+                .verify_file(&file)
+                .await
+                .unwrap(),
+            FileStatus::Missing
+        );
+    }
+}

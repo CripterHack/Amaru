@@ -1,41 +1,53 @@
-mod config;
-mod events;
-mod quarantine;
-mod behavior;
+pub mod behavior;
+pub mod config;
 mod core_services;
-mod security;
+pub mod events;
+pub mod quarantine;
+pub mod quick_paths;
 mod resource_manager;
+pub mod scheduler;
+mod security;
 
-pub use config::Config;
-pub use events::{Event, EventChannel, ThreatType, RiskLevel, ThreatDetails, ErrorCode};
-pub use quarantine::{Quarantine, QuarantineError};
 pub use behavior::{BehaviorAnalyzer, MaliciousBehavior, MaliciousBehaviorType};
-pub use core_services::{CoreServices, CoreNotification, IntegratedScanResult};
-pub use resource_manager::{ResourceManager, ResourceMetrics, TaskType, SystemPriority};
+pub use config::Config;
+pub use core_services::{CoreNotification, CoreServices, IntegratedScanResult};
+pub use events::{ErrorCode, Event, EventChannel, RiskLevel, ThreatDetails, ThreatType};
+pub use quarantine::{Quarantine, QuarantineEntry, QuarantineError};
+pub use resource_manager::{ResourceManager, ResourceMetrics, SystemPriority, TaskType};
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::mpsc;
+use chrono::Utc;
+use parking_lot::{Mutex, RwLock};
+use radare2_analyzer::{AnalysisResult, Radare2Analyzer, Radare2Config};
+use realtime_monitor::{EventAction, FileEventType, MonitorConfig, MonitorStats, RealtimeMonitor};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{self, Read},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use thiserror::Error;
-use log::{debug, error, info, warn};
-use std::io;
-use std::time::Duration;
+use tokio::sync::mpsc;
+use yara_engine::heuristic::{ConfidenceLevel, HeuristicConfig, HeuristicEngine, HeuristicResult};
+use yara_engine::{RuleMatch, YaraEngine};
 
-use yara_engine::{YaraEngine, ScanResult as YaraScanResult, RuleMatch};
-use radare2_analyzer::{Radare2Analyzer, PEAnalysis};
-use realtime_monitor::{RealtimeMonitor, FileEvent, FileEventType, EventAction};
-use yara_engine::heuristic::{HeuristicEngine, HeuristicConfig, HeuristicResult, ConfidenceLevel};
-
-pub mod service;
+#[cfg(windows)]
 pub mod ipc;
-
+#[cfg(windows)]
+pub mod service;
 // Re-exportar elementos de seguridad
 pub use security::{
-    SecurityManager, SecurityError, SecurityCheckResult,
-    IntegrityManager, TamperProtection, SecureLogger, DigitalSignature
+    DigitalSignature, FileStatus, ImportanceLevel, IntegrityError, IntegrityManager, IntegrityStatus,
+    SecureLogger, SecureLoggerBackend, SecureLoggingError, SecurityCheckResult, SecurityError,
+    SecurityManager, SensitivityLevel, SignatureError, SignatureInfo, TamperProtection,
+    TamperProtectionError,
 };
 
 // Usar el allocator optimizado
+#[cfg(feature = "optimize_memory")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -43,795 +55,917 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub enum AmaruError {
     #[error("Error de E/S: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Error en el motor YARA: {0}")]
     Yara(String),
-    
+
     #[error("Error en el análisis estático: {0}")]
     Analysis(String),
-    
+
     #[error("Error en el sistema de cuarentena: {0}")]
     Quarantine(#[from] QuarantineError),
-    
+
+    #[error("File exceeds configured size limit: {0}")]
+    FileTooLarge(PathBuf),
+
     #[error("Error de configuración: {0}")]
     Config(String),
-    
+
+    #[cfg(windows)]
+    #[error("Error de comunicación con el servicio: {0}")]
+    Ipc(#[from] ipc::IpcError),
+
     #[error("Error interno del sistema: {0}")]
     Internal(String),
-    
+
     #[error("Error de inicialización: {0}")]
     InitializationError(String),
-    
+
     #[error("Error en el monitor en tiempo real: {0}")]
     RealTimeMonitorError(String),
-    
+
     #[error("Error en el sistema de actualización: {0}")]
     UpdateError(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct ScanResult {
+    pub heuristic_result: Option<HeuristicResult>,
+    pub sha256: String,
+    /// Elapsed wall time for this request, in seconds.
+    pub scan_time: f64,
     /// Ruta del archivo
     pub path: PathBuf,
-    
+
     /// Coincidencias YARA
-    pub yara_matches: Vec<YaraScanResult>,
-    
+    pub yara_matches: Vec<RuleMatch>,
+
     /// Análisis estático
-    pub static_analysis: Option<PEAnalysis>,
-    
+    pub static_analysis: Option<AnalysisResult>,
+
     /// Nivel de riesgo
     pub risk_level: RiskLevel,
-    
+
     /// Detalles de la amenaza
     pub threat_details: Option<ThreatDetails>,
-    
+
     /// Análisis de comportamiento
     pub behaviors: Option<Vec<MaliciousBehavior>>,
 }
 
-/// Estructura principal del antivirus Amaru
-///
-/// Proporciona funcionalidades para:
-/// - Escaneo de archivos con YARA
-/// - Análisis estático con Radare2
-/// - Protección en tiempo real
-/// - Sistema de cuarentena
-/// - Gestión de eventos
-/// - Análisis heurístico
-/// - Integración de servicios core
+/// Estado del servicio
+#[derive(Debug, Clone)]
+pub struct ServiceState {
+    pub is_running: bool,
+    pub uptime: Duration,
+    pub files_monitored: usize,
+    pub threats_detected: usize,
+    pub scan_in_progress: bool,
+    pub scan_progress: Option<ScanProgress>,
+    pub last_update: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScanProgress {
+    pub files_scanned: usize,
+    pub files_total: usize,
+    pub current_file: PathBuf,
+    pub start_time: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone)]
+struct Engines {
+    yara: YaraEngine,
+    heuristic: Arc<HeuristicEngine>,
+    heuristic_threshold: u32,
+    heuristic_enabled: bool,
+}
+
+struct CachedScan {
+    engines: Arc<Engines>,
+    heuristic: bool,
+    radare: bool,
+    result: ScanResult,
+}
+
+struct Scanner {
+    config: Config,
+    engines: RwLock<Arc<Engines>>,
+    behavior: BehaviorAnalyzer,
+    radare: Option<Radare2Analyzer>,
+    quarantine: Quarantine,
+    events: EventChannel,
+    cache: Mutex<HashMap<PathBuf, CachedScan>>,
+    slots: Arc<tokio::sync::Semaphore>,
+}
+
+struct ActiveMonitor {
+    watcher: Arc<RealtimeMonitor>,
+    worker: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ActiveMonitor {
+    fn drop(&mut self) {
+        self.worker.abort();
+        let _ = self.watcher.stop();
+    }
+}
+
 #[derive(Clone)]
 pub struct Amaru {
-    /// Configuración
-    config: Config,
-    
-    /// Motor YARA
-    yara_engine: Option<YaraEngine>,
-    
-    /// Analizador Radare2
-    radare2_analyzer: Arc<Radare2Analyzer>,
-    
-    /// Analizador de comportamiento
-    behavior_analyzer: Arc<BehaviorAnalyzer>,
-    
-    /// Monitor en tiempo real
-    realtime_monitor: Option<RealtimeMonitor>,
-    
-    /// Sistema de cuarentena
-    quarantine: Arc<Quarantine>,
-    
-    /// Canal de eventos
-    event_channel: EventChannel,
-    
-    /// Cache de resultados de escaneo
-    scan_cache: dashmap::DashMap<PathBuf, (ScanResult, std::time::Instant)>,
-    
-    /// Motor de análisis heurístico
-    heuristic_engine: Option<HeuristicEngine>,
-    
-    /// Servicios core integrados
+    scanner: Arc<Scanner>,
+    monitor: Arc<Mutex<Option<ActiveMonitor>>>,
+    monitor_changes: Arc<tokio::sync::Mutex<()>>,
     core_services: Option<Arc<tokio::sync::Mutex<CoreServices>>>,
 }
 
-impl Amaru {
-    /// Creates a new instance of Amaru
-    ///
-    /// # Arguments
-    /// * `config` - Configuration for the antivirus
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - Configuration is invalid
-    /// - Required components cannot be initialized
-    pub async fn new(config: Config) -> Result<Self, AmaruError> {
-        // Validate configuration
-        config.validate().map_err(|e| AmaruError::Config(e.to_string()))?;
-        
-        // Initialize YARA engine
-        let yara_engine = Some(
-            YaraEngine::new(&config.yara_rules_path)
-                .map_err(|e| AmaruError::Yara(e.to_string()))?
-        );
-        
-        // Initialize radare2 analyzer
-        let radare2_analyzer = Arc::new(
-            Radare2Analyzer::new()
-                .map_err(|e| AmaruError::Analysis(e.to_string()))?
-        );
-        
-        // Initialize quarantine system
-        let quarantine = Arc::new(
-            Quarantine::new(
-                &config.quarantine_config.quarantine_path,
-                config.quarantine_config.max_size,
-                config.quarantine_config.retention_days,
-            )?
-        );
-        
-        // Initialize behavior analyzer
-        let behavior_analyzer = Arc::new(BehaviorAnalyzer::new());
-        
-        // Initialize event channel
-        let event_channel = EventChannel::new();
-        
-        // Initialize scan cache with configured TTL
-        let scan_cache = dashmap::DashMap::new();
-        
-        // Initialize heuristic engine if enabled
-        let heuristic_engine = if config.enable_heuristic_engine {
-            let heuristic_config = HeuristicConfig {
-                confidence_threshold: config.heuristic_config.confidence_threshold,
-                max_analysis_time_ms: config.heuristic_config.max_analysis_time_ms,
-                enable_memory_scanning: config.heuristic_config.enable_memory_scanning,
-            };
-            
-            Some(
-                HeuristicEngine::new(heuristic_config)
-                    .map_err(|e| AmaruError::InitializationError(format!("Failed to initialize heuristic engine: {}", e)))?
-            )
-        } else {
-            None
-        };
-        
-        // Initialize core services
-        let core_services = if config.enable_core_services {
-            let services = CoreServices::new(&config)
-                .map_err(|e| AmaruError::InitializationError(format!("Failed to initialize core services: {}", e)))?;
-                
-            Some(Arc::new(tokio::sync::Mutex::new(services)))
-        } else {
-            None
-        };
-        
-        // Initialize real-time monitor if enabled
-        let realtime_monitor = if config.enable_realtime_protection {
-            let monitor_config = MonitorConfig {
-                paths: config.realtime_config.paths.clone(),
-                extensions_filter: config.realtime_config.extensions_filter.clone(),
-                ignore_paths: config.realtime_config.ignore_paths.clone(),
-                event_delay_ms: config.realtime_config.event_delay_ms,
-            };
-            
-            Some(
-                RealtimeMonitor::new(monitor_config)
-                    .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?
-            )
-        } else {
-            None
-        };
-        
-        // Create the Amaru instance with all components initialized
-        let instance = Self {
-            config,
-            yara_engine,
-            radare2_analyzer,
-            behavior_analyzer,
-            realtime_monitor,
-            quarantine,
-            event_channel,
-            scan_cache,
-            heuristic_engine,
-            core_services,
-        };
-        
-        // Log successful initialization
-        info!("Amaru antivirus initialized successfully");
-        
-        Ok(instance)
-    }
-    
-    /// Escanea un archivo en busca de amenazas
-    ///
-    /// # Argumentos
-    /// * `path` - Ruta al archivo a escanear
-    ///
-    /// # Errores
-    /// Retorna error si:
-    /// - El archivo no existe
-    /// - El archivo es demasiado grande
-    /// - Hay un error en el escaneo YARA
-    /// - Hay un error en el análisis estático
-    pub async fn scan_file<P: AsRef<Path>>(&self, path: P) -> Result<ScanResult, AmaruError> {
-        let path = path.as_ref();
-        
-        // Verificar cache
-        if let Some(entry) = self.scan_cache.get(path) {
-            let (result, timestamp) = entry.value();
-            if timestamp.elapsed() < std::time::Duration::from_secs(3600) {
-                return Ok(result.clone());
+impl Scanner {
+    async fn scan(
+        self: &Arc<Self>,
+        path: &Path,
+        heuristic: bool,
+        radare: Option<bool>,
+    ) -> Result<ScanResult, AmaruError> {
+        let _permit = self
+            .slots
+            .acquire()
+            .await
+            .map_err(|e| AmaruError::Internal(e.to_string()))?;
+        let start = Instant::now();
+        let engines = self.engines.read().clone();
+        let scanner = self.clone();
+        let owned_path = path.to_owned();
+        // All byte-based detectors and the digest consume the same bounded snapshot.
+        let outcome = tokio::task::spawn_blocking(move || -> Result<_, AmaruError> {
+            let file = File::open(&owned_path)?;
+            let size_limit = scanner.config.scan_config.max_file_size;
+            let meta = file.metadata()?;
+            if !meta.is_file() {
+                return Err(AmaruError::Analysis(format!(
+                    "Expected a regular file: {}",
+                    owned_path.display()
+                )));
             }
-        }
-        
-        // Verificar tamaño máximo
-        let metadata = path.metadata().map_err(|e| AmaruError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            format!("No se puede acceder al archivo {}: {}", path.display(), e)
-        )))?;
-        
-        if metadata.len() > self.config.scan_config.max_file_size {
-            return Err(AmaruError::Analysis(format!(
-                "El archivo {} excede el tamaño máximo permitido de {} bytes",
-                path.display(),
-                self.config.scan_config.max_file_size
-            )));
-        }
-        
-        // Escanear con YARA
-        let yara_matches = self.yara_engine.as_ref().unwrap().scan_file(path)
-            .map_err(|e| AmaruError::Yara(format!(
-                "Error al escanear el archivo {} con YARA: {}",
-                path.display(), e
-            )))?;
-            
-        // Análisis estático para ejecutables
-        let static_analysis = if path.extension().map_or(false, |ext| ext == "exe" || ext == "dll") {
-            Some(self.radare2_analyzer.analyze_pe(path)
-                .map_err(|e| AmaruError::Analysis(format!(
-                    "Error al analizar el archivo PE {}: {}",
-                    path.display(), e
-                )))?)
-        } else {
-            None
-        };
-        
-        // Análisis de comportamiento para ejecutables
-        let behaviors = if let Some(analysis) = &static_analysis {
-            let mut all_behaviors = Vec::new();
-            
-            // Analizar importaciones
-            all_behaviors.extend(
-                self.behavior_analyzer.analyze_imports(&analysis.imports)
-            );
-            
-            // Analizar secciones
-            all_behaviors.extend(
-                self.behavior_analyzer.analyze_sections(
-                    &analysis.sections.iter()
-                        .map(|s| (s.name.clone(), s.entropy))
-                        .collect::<Vec<_>>()
+            if meta.len() > size_limit {
+                return Err(AmaruError::FileTooLarge(owned_path));
+            }
+            let mut bytes = Vec::new();
+            file.take(size_limit.saturating_add(1))
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > size_limit {
+                return Err(AmaruError::FileTooLarge(owned_path));
+            }
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            let is_pe = has_pe_header(&bytes);
+            let run_radare = radare.unwrap_or(scanner.radare.is_some() && is_pe);
+            if run_radare && scanner.radare.is_none() {
+                return Err(AmaruError::Analysis(
+                    "Radare2 is required for the requested static analysis".into(),
+                ));
+            }
+            if let Some(hit) = scanner.cache.lock().get(&owned_path) {
+                if Arc::ptr_eq(&hit.engines, &engines)
+                    && hit.heuristic == heuristic
+                    && hit.radare == run_radare
+                    && hit.result.sha256 == digest
+                {
+                    return Ok(ScanWork::Cached(hit.result.clone()));
+                }
+            }
+            let yara_matches = engines
+                .yara
+                .scan_memory(&bytes)
+                .map_err(|e| AmaruError::Yara(e.to_string()))?;
+            let heuristic_result = if heuristic {
+                Some(
+                    engines
+                        .heuristic
+                        .analyze_bytes(&owned_path, &bytes)
+                        .map_err(|e| AmaruError::Analysis(e.to_string()))?,
                 )
-            );
-            
-            // Analizar recursos
-            all_behaviors.extend(
-                self.behavior_analyzer.analyze_resources(&analysis.resources)
-            );
-            
-            Some(all_behaviors)
-        } else {
-            None
-        };
-        
-        // Calcular nivel de riesgo considerando comportamientos
-        let risk_level = self.calculate_risk_level(&yara_matches, &static_analysis, behaviors.as_deref());
-        
-        // Crear detalles de amenaza si es necesario
-        let threat_details = if risk_level > RiskLevel::Low {
-            Some(self.create_threat_details(path, &yara_matches, &static_analysis, behaviors.as_deref())?)
-        } else {
-            None
-        };
-        
-        // Crear resultado
-        let result = ScanResult {
-            path: path.to_path_buf(),
-            yara_matches,
-            static_analysis,
-            risk_level,
-            threat_details,
-            behaviors,
-        };
-        
-        // Actualizar cache
-        self.scan_cache.insert(
-            path.to_path_buf(),
-            (result.clone(), std::time::Instant::now()),
-        );
-        
-        // Emitir evento si es una amenaza
-        if risk_level > RiskLevel::Low {
-            if let Some(details) = &result.threat_details {
-                self.event_channel.sender().send(Event::ThreatDetected {
-                    path: path.to_path_buf(),
-                    threat_type: self.determine_threat_type(&result),
-                    risk_level,
-                    details: details.clone(),
-                    timestamp: chrono::Utc::now(),
-                }).map_err(|e| AmaruError::Internal(e.to_string()))?;
-            }
-        }
-        
-        Ok(result)
-    }
-    
-    /// Enables real-time protection
-    ///
-    /// # Errors
-    /// Returns an error if the real-time monitor cannot be started
-    pub async fn enable_realtime_protection(&mut self) -> Result<(), AmaruError> {
-        // Check if real-time protection is already enabled
-        if self.realtime_monitor.is_some() {
-            return Ok(());
-        }
-        
-        // Create monitor configuration from current settings
-        let monitor_config = MonitorConfig {
-            paths: self.config.realtime_config.paths.clone(),
-            extensions_filter: self.config.realtime_config.extensions_filter.clone(),
-            ignore_paths: self.config.realtime_config.ignore_paths.clone(),
-            event_delay_ms: self.config.realtime_config.event_delay_ms,
-        };
-        
-        // Initialize the real-time monitor
-        let mut monitor = RealtimeMonitor::new(monitor_config)
-            .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
-            
-        // Get a clone of required components for the closure
-        let yara_engine = self.yara_engine.as_ref()
-            .ok_or_else(|| AmaruError::InitializationError("YARA engine not initialized".to_string()))?
-            .clone();
-            
-        let radare2_analyzer = Arc::clone(&self.radare2_analyzer);
-        let event_sender = self.event_channel.sender().clone();
-        let quarantine = Arc::clone(&self.quarantine);
-        let config = self.config.clone();
-        
-        // Start the monitor with event handler
-        monitor.start(move |event| {
-            let file_path = event.path.clone();
-            let event_type = event.event_type.clone();
-            
-            // Only scan created or modified files
-            if matches!(event_type, FileEventType::Created | FileEventType::Modified) {
-                // Clone required components for async block
-                let yara_engine_clone = yara_engine.clone();
-                let radare2_analyzer_clone = Arc::clone(&radare2_analyzer);
-                let event_sender_clone = event_sender.clone();
-                let quarantine_clone = Arc::clone(&quarantine);
-                let config_clone = config.clone();
-                
-                // Spawn async task to handle scanning
-                tokio::spawn(async move {
-                    match Amaru::scan_file_internal(
-                        &file_path, 
-                        &yara_engine_clone, 
-                        &radare2_analyzer_clone,
-                        &config_clone
-                    ).await {
-                        Ok(result) => {
-                            // Check if file is malicious
-                            if result.risk_level >= RiskLevel::High {
-                                // Send threat event
-                                let _ = event_sender_clone.send(Event::ThreatDetected {
-                                    path: file_path.clone(),
-                                    details: result.threat_details.clone().unwrap_or_default(),
-                                    timestamp: chrono::Utc::now(),
-                                });
-                                
-                                // Quarantine if configured to do so
-                                if config_clone.quarantine_config.auto_quarantine {
-                                    if let Err(e) = quarantine_clone.quarantine_file(&file_path, "Real-time detection") {
-                                        error!("Failed to quarantine file {}: {}", file_path.display(), e);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to scan file {}: {}", file_path.display(), e);
+            } else {
+                None
+            };
+            let pe_behavior = heuristic && is_pe;
+            let behaviors = if pe_behavior {
+                scanner
+                    .behavior
+                    .analyze_optimized(&bytes, &digest)
+                    .map_err(|err| AmaruError::Analysis(err.to_string()))?
+            } else {
+                scanner
+                    .behavior
+                    .detect_test_files(&bytes)
+                    .into_iter()
+                    .collect()
+            };
+            Ok(ScanWork::Fresh {
+                result: ScanResult {
+                    path: owned_path,
+                    yara_matches,
+                    heuristic_result,
+                    behaviors: (!behaviors.is_empty()).then_some(behaviors),
+                    static_analysis: None,
+                    risk_level: RiskLevel::Low,
+                    threat_details: None,
+                    sha256: digest,
+                    scan_time: 0.0,
+                },
+                size: bytes.len() as u64,
+                engines,
+                radare: run_radare,
+                pe_behavior,
+            })
+        })
+        .await
+        .map_err(|e| AmaruError::Internal(e.to_string()))??;
+
+        let mut result = match outcome {
+            ScanWork::Cached(result) => result,
+            ScanWork::Fresh {
+                mut result,
+                size,
+                engines,
+                radare,
+                pe_behavior,
+            } => {
+                if radare {
+                    let analyzer = self
+                        .radare
+                        .as_ref()
+                        .ok_or_else(|| AmaruError::Analysis("Radare2 unavailable".into()))?;
+                    let analysis = analyzer
+                        .analyze_file(path)
+                        .await
+                        .map_err(|e| AmaruError::Analysis(e.to_string()))?;
+                    if analysis.sha256.as_deref() != Some(&result.sha256) {
+                        return Err(AmaruError::Analysis(format!(
+                            "File changed during static analysis: {}",
+                            path.display()
+                        )));
+                    }
+                    if !pe_behavior {
+                        let imports = analysis
+                            .imports
+                            .iter()
+                            .map(|i| i.name.clone())
+                            .collect::<Vec<_>>();
+                        let sections = analysis
+                            .sections
+                            .iter()
+                            .map(|s| (s.name.clone(), s.entropy))
+                            .collect::<Vec<_>>();
+                        let mut behaviors = self
+                            .behavior
+                            .analyze_imports_optimized(&imports, &result.sha256)
+                            .await;
+                        behaviors.extend(
+                            self.behavior
+                                .analyze_sections_optimized(&sections, &result.sha256)
+                                .await,
+                        );
+                        if !behaviors.is_empty() {
+                            result
+                                .behaviors
+                                .get_or_insert_with(Vec::new)
+                                .extend(behaviors);
                         }
                     }
-                });
-            }
-            
-            // Continue monitoring
-            EventAction::Continue
-        })
-        .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
-        
-        // Store the initialized monitor
-        self.realtime_monitor = Some(monitor);
-        
-        // Update configuration
-        self.config.enable_realtime_protection = true;
-        
-        // Log successful enabling
-        info!("Real-time protection enabled successfully");
-        
-        Ok(())
-    }
-    
-    /// Deshabilita la protección en tiempo real
-    ///
-    /// Detiene el monitoreo de archivos y libera los recursos asociados.
-    pub async fn disable_realtime_protection(&mut self) -> Result<(), AmaruError> {
-        if let Some(monitor) = self.realtime_monitor.take() {
-            monitor.stop().await
-                .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
-        }
-        Ok(())
-    }
-    
-    /// Actualiza las reglas YARA
-    ///
-    /// Recarga las reglas desde el directorio configurado.
-    ///
-    /// # Errores
-    /// Retorna error si:
-    /// - No se pueden cargar las nuevas reglas
-    /// - Las reglas son inválidas
-    pub async fn update_yara_rules(&self) -> Result<(), AmaruError> {
-        self.yara_engine.as_ref().unwrap().reload_rules()
-            .map_err(|e| AmaruError::Yara(e.to_string()))?;
-        Ok(())
-    }
-    
-    /// Obtiene un receptor de eventos del antivirus
-    ///
-    /// Los eventos incluyen:
-    /// - Detección de amenazas
-    /// - Archivos en cuarentena
-    /// - Archivos restaurados
-    /// - Actualizaciones
-    /// - Errores
-    pub fn event_receiver(&self) -> crossbeam_channel::Receiver<Event> {
-        self.event_channel.receiver()
-    }
-    
-    // Métodos privados
-    
-    async fn scan_file_internal(
-        path: &Path,
-        yara_engine: &YaraEngine,
-        radare2_analyzer: &Radare2Analyzer,
-        behavior_analyzer: &BehaviorAnalyzer,
-        config: &Config,
-    ) -> Result<ScanResult, AmaruError> {
-        // Start the scan
-        debug!("Scanning file: {}", path.display());
-        let start_time = std::time::Instant::now();
-        
-        // Check if file exists
-        if !path.exists() {
-            return Err(AmaruError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("File not found: {}", path.display())
-            )));
-        }
-        
-        // Get file metadata
-        let metadata = path.metadata().map_err(|e| AmaruError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Failed to get metadata for {}: {}", path.display(), e)
-        )))?;
-        
-        // Check file size limit
-        if metadata.len() > config.scan_config.max_file_size {
-            return Err(AmaruError::Analysis(format!(
-                "File {} exceeds maximum size limit ({} bytes)",
-                path.display(),
-                config.scan_config.max_file_size
-            )));
-        }
-        
-        // Scan with YARA
-        let yara_matches = match yara_engine.scan_file(path) {
-            Ok(result) => result.matches,
-            Err(e) => {
-                warn!("YARA scan error for {}: {}", path.display(), e);
-                Vec::new()
-            }
-        };
-        
-        // Perform static analysis if it's an executable
-        let static_analysis = if path.extension().map_or(false, |ext| 
-            ext == "exe" || ext == "dll" || ext == "sys") {
-            match radare2_analyzer.analyze_pe(path) {
-                Ok(analysis) => Some(analysis),
-                Err(e) => {
-                    warn!("Static analysis error for {}: {}", path.display(), e);
-                    None
+                    result.static_analysis = Some(analysis);
                 }
-            }
-        } else {
-            None
-        };
-        
-        // Read file content for behavior analysis (limit to first 1MB for large files)
-        let content = match std::fs::read(path) {
-            Ok(data) => {
-                if data.len() > 1024 * 1024 {
-                    data[..1024 * 1024].to_vec()
-                } else {
-                    data
+                result.classify(size, engines.heuristic_threshold);
+                let mut cache = self.cache.lock();
+                if cache.len() >= 512 {
+                    cache.clear();
                 }
-            },
-            Err(e) => {
-                warn!("Failed to read file content for behavior analysis: {}", e);
-                Vec::new()
+                cache.insert(
+                    path.to_owned(),
+                    CachedScan {
+                        engines,
+                        heuristic,
+                        radare,
+                        result: result.clone(),
+                    },
+                );
+                result
             }
         };
-        
-        // Detect test files like EICAR
-        let mut behaviors = Vec::new();
-        if !content.is_empty() {
-            if let Some(test_behavior) = behavior_analyzer.detect_test_files(&content) {
-                behaviors.push(test_behavior);
-            }
+        result.scan_time = start.elapsed().as_secs_f64();
+        if let Some(details) = &result.threat_details {
+            let _ = self.events.send(Event::ThreatDetected {
+                path: result.path.clone(),
+                risk_level: result.risk_level,
+                threat_type: result.threat_type(),
+                details: details.clone(),
+                timestamp: Utc::now(),
+            });
         }
-        
-        // Perform additional behavior analysis for executables
-        if let Some(analysis) = &static_analysis {
-            // Analyze imports
-            behaviors.extend(behavior_analyzer.analyze_imports(&analysis.imports));
-            
-            // Analyze sections
-            behaviors.extend(behavior_analyzer.analyze_sections(
-                &analysis.sections.iter()
-                    .map(|s| (s.name.clone(), s.entropy))
-                    .collect::<Vec<_>>()
-            ));
-        }
-        
-        // Create scan result
-        let result = ScanResult {
-            path: path.to_path_buf(),
-            yara_matches,
-            static_analysis,
-            risk_level: RiskLevel::Unknown, // Will be calculated later
-            threat_details: None, // Will be populated later
-            behaviors: if behaviors.is_empty() { None } else { Some(behaviors) },
-        };
-        
-        debug!("Scan completed in {}ms", start_time.elapsed().as_millis());
-        
         Ok(result)
     }
-    
-    fn calculate_risk_level(
-        &self,
-        yara_matches: &[YaraScanResult],
-        static_analysis: &Option<PEAnalysis>,
-        behaviors: Option<&[MaliciousBehavior]>,
-    ) -> RiskLevel {
-        let mut score = 0;
-        
-        // Puntuación por coincidencias YARA
-        for m in yara_matches {
-            score += match m.rule_name.as_str() {
-                name if name.contains("malware") => 3,
-                name if name.contains("exploit") => 4,
-                name if name.contains("suspicious") => 2,
-                _ => 1,
+
+    fn quarantine_event(&self, entry: &QuarantineEntry) {
+        let _ = self.events.send(Event::FileQuarantined {
+            original_path: entry.original_path.clone(),
+            reason: entry.reason.clone(),
+            timestamp: entry.quarantine_date,
+        });
+    }
+
+    fn report_error(&self, path: &Path, code: ErrorCode, err: impl std::fmt::Display) {
+        log::warn!("{}: {}", path.display(), err);
+        let _ = self.events.send(Event::Error {
+            code,
+            message: err.to_string(),
+            details: Some(path.display().to_string()),
+            timestamp: Utc::now(),
+        });
+    }
+}
+
+enum ScanWork {
+    Cached(ScanResult),
+    Fresh {
+        result: ScanResult,
+        size: u64,
+        engines: Arc<Engines>,
+        radare: bool,
+        pe_behavior: bool,
+    },
+}
+
+fn has_pe_header(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(b"MZ") || bytes.len() < 64 {
+        return false;
+    }
+    let offset = u32::from_le_bytes(bytes[60..64].try_into().expect("four bytes")) as usize;
+    bytes
+        .get(offset..)
+        .is_some_and(|rest| rest.starts_with(b"PE\0\0"))
+}
+
+/// Normalize the two severity representations used by Amaru rule catalogs.
+pub(crate) fn rule_severity(rule: &RuleMatch) -> Option<u8> {
+    let value = rule.meta.get("severity")?;
+    let score = if let Some(n) = value.as_u64() {
+        u8::try_from(n).ok()?
+    } else {
+        match value.as_str()?.trim().to_ascii_lowercase().as_str() {
+            "low" => 25,
+            "medium" => 55,
+            "high" => 75,
+            "critical" => 95,
+            other => other.parse().ok()?,
+        }
+    };
+    (score <= 100).then_some(score)
+}
+
+fn risk_band(score: u8) -> RiskLevel {
+    match score {
+        90.. => RiskLevel::Critical,
+        70..=89 => RiskLevel::High,
+        50..=69 => RiskLevel::Medium,
+        _ => RiskLevel::Low,
+    }
+}
+
+impl ScanResult {
+    fn classify(&mut self, size: u64, min_score: u32) {
+        let mut risk = RiskLevel::Low;
+        for rule in &self.yara_matches {
+            let severity = rule_severity(rule)
+                .map(risk_band)
+                .unwrap_or(RiskLevel::Medium);
+            risk = risk.max(severity);
+        }
+        let heur = self
+            .heuristic_result
+            .as_ref()
+            .filter(|h| h.score > 0 && h.score >= min_score);
+        if let Some(heur) = heur {
+            risk = risk.max(match heur.confidence {
+                ConfidenceLevel::Low | ConfidenceLevel::Medium => RiskLevel::Medium,
+                ConfidenceLevel::High => RiskLevel::High,
+                ConfidenceLevel::Critical => RiskLevel::Critical,
+            });
+        }
+        for behavior in self.behaviors.iter().flatten() {
+            let severity = if matches!(behavior.behavior_type, MaliciousBehaviorType::TestFile) {
+                RiskLevel::High
+            } else {
+                match behavior.confidence {
+                    90..=u8::MAX => RiskLevel::Critical,
+                    70..=89 => RiskLevel::High,
+                    _ => RiskLevel::Medium,
+                }
             };
+            risk = risk.max(severity);
         }
-        
-        // Puntuación por análisis estático
-        if let Some(analysis) = static_analysis {
-            // Secciones sospechosas
-            if analysis.has_suspicious_sections {
-                score += 2;
-            }
-            
-            // Importaciones sospechosas
-            if analysis.has_suspicious_imports {
-                score += 2;
-            }
-            
-            // Entropía alta
-            if analysis.entropy > 7.0 {
-                score += 2;
-            }
+        if let Some(analysis) = &self.static_analysis {
+            risk = risk.max(risk_band(analysis.risk_score));
         }
-        
-        // Puntuación por comportamientos maliciosos
-        if let Some(behaviors) = behaviors {
-            for behavior in behaviors {
-                score += match behavior.behavior_type {
-                    MaliciousBehaviorType::ProcessInjection => 4,
-                    MaliciousBehaviorType::SystemPersistence => 3,
-                    MaliciousBehaviorType::DetectionEvasion => 3,
-                    MaliciousBehaviorType::Ransomware => 5,
-                    MaliciousBehaviorType::Keylogger => 4,
-                    MaliciousBehaviorType::DataExfiltration => 4,
-                    MaliciousBehaviorType::CommandAndControl => 4,
-                };
-                
-                // Ajustar por nivel de confianza
-                score = (score as f32 * (behavior.confidence as f32 / 100.0)) as i32;
-            }
-        }
-        
-        match score {
-            0..=2 => RiskLevel::Low,
-            3..=5 => RiskLevel::Medium,
-            6..=8 => RiskLevel::High,
-            _ => RiskLevel::Critical,
+        self.risk_level = risk;
+        if risk > RiskLevel::Low || !self.yara_matches.is_empty() {
+            self.threat_details = Some(ThreatDetails {
+                file_hash: self.sha256.clone(),
+                file_size: size,
+                file_type: self
+                    .static_analysis
+                    .as_ref()
+                    .and_then(|a| a.file_type.clone())
+                    .unwrap_or_else(|| "Unknown".into()),
+                matches: self
+                    .yara_matches
+                    .iter()
+                    .map(|r| r.rule_name.clone())
+                    .collect(),
+                additional_info: Some(
+                    serde_json::json!({"behaviors":self.behaviors,"heuristic":heur,"static_risk":self.static_analysis.as_ref().map(|a|a.risk_score)}),
+                ),
+            });
         }
     }
-    
-    fn determine_threat_type(&self, result: &ScanResult) -> ThreatType {
-        if !result.yara_matches.is_empty() {
-            let rule = &result.yara_matches[0];
+
+    fn threat_type(&self) -> ThreatType {
+        if let Some(rule) = self
+            .yara_matches
+            .iter()
+            .max_by_key(|rule| rule_severity(rule).unwrap_or(55))
+        {
             ThreatType::YaraMatch {
                 rule_name: rule.rule_name.clone(),
-                description: rule.description.clone(),
+                description: rule
+                    .meta
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
             }
-        } else if let Some(behaviors) = result.behaviors.as_ref() {
-            if let Some(behavior) = behaviors.iter().max_by_key(|b| b.confidence) {
-                ThreatType::SuspiciousBehavior {
-                    behavior_type: format!("{:?}", behavior.behavior_type),
-                    description: behavior.description.clone(),
-                }
-            } else {
-                ThreatType::SuspiciousBehavior {
-                    behavior_type: "Unknown".into(),
-                    description: "Comportamiento sospechoso detectado".into(),
-                }
-            }
-        } else if let Some(analysis) = &result.static_analysis {
+        } else if let Some(b) = self.behaviors.iter().flatten().max_by_key(|b| b.confidence) {
             ThreatType::SuspiciousBehavior {
-                behavior_type: "Suspicious PE".into(),
-                description: format!(
-                    "Entropía: {}, Secciones sospechosas: {}, Importaciones sospechosas: {}",
-                    analysis.entropy,
-                    analysis.has_suspicious_sections,
-                    analysis.has_suspicious_imports,
-                ),
+                behavior_type: format!("{:?}", b.behavior_type),
+                description: b.description.clone(),
+            }
+        } else if let Some(b) = self
+            .static_analysis
+            .iter()
+            .flat_map(|a| &a.behaviors)
+            .next()
+        {
+            ThreatType::SuspiciousBehavior {
+                behavior_type: b.name.clone(),
+                description: b.description.clone(),
             }
         } else {
             ThreatType::SuspiciousBehavior {
-                behavior_type: "Unknown".into(),
-                description: "Comportamiento sospechoso detectado".into(),
+                behavior_type: "Heuristic".into(),
+                description: self
+                    .heuristic_result
+                    .as_ref()
+                    .map(|h| h.description.clone())
+                    .unwrap_or_default(),
             }
         }
     }
-    
-    fn create_threat_details(
-        &self,
-        path: &Path,
-        yara_matches: &[YaraScanResult],
-        static_analysis: &Option<PEAnalysis>,
-        behaviors: Option<&[MaliciousBehavior]>,
-    ) -> Result<ThreatDetails, AmaruError> {
-        use sha2::{Sha256, Digest};
-        
-        // Calcular hash
-        let mut file = std::fs::File::open(path)?;
-        let mut hasher = Sha256::new();
-        std::io::copy(&mut file, &mut hasher)?;
-        let hash = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, hasher.finalize());
-        
-        // Obtener tipo de archivo
-        let file_type = if let Some(analysis) = static_analysis {
-            analysis.file_type.clone()
-        } else {
-            "Unknown".to_string()
+}
+
+impl Amaru {
+    pub(crate) fn from_config(config: Config) -> Result<Self, AmaruError> {
+        Self::from_config_with_radare2(config, |_| true)
+    }
+
+    pub(crate) fn from_config_with_radare2(
+        config: Config,
+        allowed: impl FnOnce(&mut Radare2Analyzer) -> bool,
+    ) -> Result<Self, AmaruError> {
+        config
+            .validate()
+            .map_err(|e| AmaruError::Config(e.to_string()))?;
+        let mut yara = YaraEngine::new(&config.yara_rules_path)
+            .map_err(|e| AmaruError::Yara(e.to_string()))?;
+        let deadline = Duration::from_secs(config.scan_config.scan_timeout);
+        yara.set_scan_timeout(deadline);
+        let behavior = BehaviorAnalyzer::new();
+        behavior.set_timeout(deadline.as_millis().clamp(1, u64::MAX as u128) as u64);
+        behavior.set_memory_limit(
+            usize::try_from(config.scan_config.max_file_size).unwrap_or(usize::MAX),
+        );
+        let heuristic_config = HeuristicConfig {
+            max_file_size: config.scan_config.max_file_size,
+            min_detection_score: u32::from(config.heuristic_threshold),
+            ..Default::default()
         };
-        
-        // Recopilar coincidencias
-        let matches = yara_matches.iter()
-            .map(|m| format!("{}: {}", m.rule_name, m.description.as_deref().unwrap_or("")))
-            .collect();
-            
-        // Información adicional
-        let mut additional_info = serde_json::Map::new();
-        if let Some(analysis) = static_analysis {
-            additional_info.insert(
-                "entropy".to_string(),
-                serde_json::Value::Number(serde_json::Number::from_f64(analysis.entropy).unwrap()),
-            );
-            additional_info.insert(
-                "suspicious_sections".to_string(),
-                serde_json::Value::Bool(analysis.has_suspicious_sections),
-            );
-            additional_info.insert(
-                "suspicious_imports".to_string(),
-                serde_json::Value::Bool(analysis.has_suspicious_imports),
-            );
-        }
-        
-        if let Some(behaviors) = behaviors {
-            additional_info.insert(
-                "malicious_behaviors".to_string(),
-                serde_json::Value::Array(
-                    behaviors.iter()
-                        .map(|b| serde_json::json!({
-                            "type": format!("{:?}", b.behavior_type),
-                            "description": b.description,
-                            "confidence": b.confidence,
-                            "evidence": b.evidence
-                        }))
-                        .collect()
-                ),
-            );
-        }
-        
-        Ok(ThreatDetails {
-            file_hash: hash,
-            file_size: path.metadata()?.len(),
-            file_type,
-            matches,
-            additional_info: Some(serde_json::Value::Object(additional_info)),
+        let engines = Engines {
+            yara,
+            heuristic_threshold: heuristic_config.min_detection_score,
+            heuristic_enabled: config.heuristic_analysis,
+            heuristic: Arc::new(HeuristicEngine::new(heuristic_config)),
+        };
+        let radare = match Radare2Analyzer::new(Radare2Config {
+            timeout_seconds: config.scan_config.scan_timeout,
+            ..Default::default()
+        }) {
+            Ok(mut analyzer) => allowed(&mut analyzer).then_some(analyzer),
+            Err(radare2_analyzer::Radare2Error::NotFound) => None,
+            Err(e) => return Err(AmaruError::Analysis(e.to_string())),
+        };
+        let quarantine = Quarantine::new(
+            &config.quarantine_config.quarantine_path,
+            config.quarantine_config.max_size,
+            config.quarantine_config.retention_days,
+        )?;
+        let slots = Arc::new(tokio::sync::Semaphore::new(config.scan_config.max_threads));
+        Ok(Self {
+            scanner: Arc::new(Scanner {
+                config,
+                engines: RwLock::new(Arc::new(engines)),
+                behavior,
+                radare,
+                quarantine,
+                events: EventChannel::new(),
+                cache: Mutex::new(HashMap::new()),
+                slots,
+            }),
+            monitor: Arc::new(Mutex::new(None)),
+            monitor_changes: Arc::default(),
+            core_services: None,
         })
     }
-    
+
+    pub async fn new(config: Config) -> Result<Self, AmaruError> {
+        let mut amaru = Self::from_config(config)?;
+        amaru.init_core_services().await?;
+        Ok(amaru)
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.scanner.config
+    }
+    pub fn quarantine(&self) -> &Quarantine {
+        &self.scanner.quarantine
+    }
+    pub fn realtime_enabled(&self) -> bool {
+        self.monitor.lock().is_some()
+    }
+    pub fn monitor_stats(&self) -> Option<MonitorStats> {
+        self.monitor
+            .lock()
+            .as_ref()
+            .map(|monitor| monitor.watcher.get_stats())
+    }
+    pub fn event_receiver(&self) -> crossbeam_channel::Receiver<Event> {
+        self.scanner.events.receiver()
+    }
+
+    pub async fn scan_file(&self, path: impl AsRef<Path>) -> Result<ScanResult, AmaruError> {
+        let heuristic = self.scanner.engines.read().heuristic_enabled;
+        self.scanner.scan(path.as_ref(), heuristic, None).await
+    }
+
+    pub async fn scan_file_with_options(
+        &self,
+        path: impl AsRef<Path>,
+        heuristic: bool,
+        radare2: bool,
+    ) -> Result<ScanResult, AmaruError> {
+        self.scanner
+            .scan(path.as_ref(), heuristic, Some(radare2))
+            .await
+    }
+
+    pub fn quarantine_file(
+        &self,
+        path: impl AsRef<Path>,
+        reason: &str,
+    ) -> Result<QuarantineEntry, AmaruError> {
+        let entry = self.quarantine().quarantine_file(path, reason)?;
+        self.scanner.quarantine_event(&entry);
+        Ok(entry)
+    }
+
+    /// Capture only the exact contents that produced the detection.
+    pub fn quarantine_detected(
+        &self,
+        result: &ScanResult,
+        reason: &str,
+    ) -> Result<QuarantineEntry, AmaruError> {
+        let entry =
+            self.quarantine()
+                .quarantine_if_unchanged(&result.path, reason, &result.sha256)?;
+        self.scanner.quarantine_event(&entry);
+        Ok(entry)
+    }
+
+    pub fn restore_quarantined(&self, id: &str) -> Result<PathBuf, AmaruError> {
+        let path = self.quarantine().restore_file_by_id(id)?;
+        let _ = self.scanner.events.send(Event::FileRestored {
+            original_path: path.clone(),
+            timestamp: Utc::now(),
+        });
+        Ok(path)
+    }
+
+    pub async fn update_yara_rules(&self) -> Result<(), AmaruError> {
+        let mut next = self.scanner.engines.write();
+        Arc::make_mut(&mut next)
+            .yara
+            .reload_rules()
+            .map_err(|e| AmaruError::Yara(e.to_string()))?;
+        self.scanner.cache.lock().clear();
+        Ok(())
+    }
+
+    pub fn init_heuristic_engine(
+        &mut self,
+        config: Option<HeuristicConfig>,
+    ) -> Result<(), AmaruError> {
+        let config = config.unwrap_or_else(|| HeuristicConfig {
+            max_file_size: self.config().scan_config.max_file_size,
+            min_detection_score: u32::from(self.config().heuristic_threshold),
+            ..Default::default()
+        });
+        let mut engines = self.scanner.engines.write();
+        let settings = Arc::make_mut(&mut engines);
+        settings.heuristic_threshold = config.min_detection_score;
+        settings.heuristic_enabled = true;
+        settings.heuristic = Arc::new(HeuristicEngine::new(config));
+        self.scanner.cache.lock().clear();
+        Ok(())
+    }
+
+    pub async fn scan_file_optimized(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<EnhancedScanResult, AmaruError> {
+        let result = self.scan_file(path).await?;
+        Ok(EnhancedScanResult {
+            file_path: result.path,
+            yara_matches: result.yara_matches,
+            heuristic_result: result.heuristic_result,
+            is_malicious: result.threat_details.is_some(),
+            scan_time: result.scan_time,
+        })
+    }
+
+    pub async fn optimize_resources(&self) -> Result<(), AmaruError> {
+        self.scanner.cache.lock().clear();
+        self.scanner.behavior.cleanup_cache(512).await;
+        self.scanner
+            .behavior
+            .optimize_thread_pool(self.config().scan_config.max_threads)
+            .await;
+        Ok(())
+    }
+
+    pub async fn enable_realtime_protection(&mut self) -> Result<(), AmaruError> {
+        let _change = self.monitor_changes.lock().await;
+        let mut slot = self.monitor.lock();
+        if slot.is_some() {
+            return Ok(());
+        }
+        let mut ignored: Vec<_> = self
+            .config()
+            .scan_config
+            .exclude_paths
+            .iter()
+            .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+            .collect();
+        ignored.push(
+            self.config()
+                .quarantine_config
+                .quarantine_path
+                .canonicalize()?,
+        );
+        ignored.push(self.config().yara_rules_path.canonicalize()?);
+        let config = MonitorConfig {
+            paths: self
+                .config()
+                .monitored_paths
+                .iter()
+                .map(std::fs::canonicalize)
+                .collect::<io::Result<_>>()?,
+            extensions_filter: self.config().scan_config.scan_extensions.clone(),
+            ignore_paths: ignored,
+            ..Default::default()
+        };
+        let paths = config.paths.clone();
+        let mut watcher = RealtimeMonitor::new(config)
+            .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
+        let (tx, mut rx) = mpsc::channel::<PathBuf>(256);
+        let events = self.scanner.events.clone();
+        let quarantine = self.scanner.quarantine.clone();
+        watcher
+            .start(move |ev| {
+                let path = match ev.event_type {
+                    FileEventType::Created | FileEventType::Modified => ev.path,
+                    FileEventType::Renamed(new) => new,
+                    FileEventType::Deleted => return EventAction::Continue,
+                };
+                if quarantine.is_staging_path(&path) {
+                    return EventAction::Continue;
+                }
+                if let Err(mpsc::error::TrySendError::Full(path)) = tx.try_send(path) {
+                    let _ = events.send(Event::Error {
+                        code: ErrorCode::Analysis,
+                        message: "Real-time scan queue is full".into(),
+                        details: Some(path.display().to_string()),
+                        timestamp: Utc::now(),
+                    });
+                }
+                EventAction::Continue
+            })
+            .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
+        let watcher = Arc::new(watcher);
+        let stats = watcher.clone();
+        let scanner = Arc::clone(&self.scanner);
+        let worker = tokio::spawn(async move {
+            while let Some(path) = rx.recv().await {
+                if path.is_dir() {
+                    continue;
+                }
+                let enabled = scanner.engines.read().heuristic_enabled;
+                let scanned = scanner.scan(&path, enabled, None).await;
+                if scanned
+                    .as_ref()
+                    .is_ok_and(|result| result.threat_details.is_some())
+                {
+                    stats.increment_threats_detected();
+                }
+                match scanned {
+                    Ok(result) if scanner.config.should_auto_quarantine(result.risk_level) => {
+                        match scanner.quarantine.quarantine_if_unchanged(
+                            &path,
+                            "Real-time detection",
+                            &result.sha256,
+                        ) {
+                            Ok(entry) => scanner.quarantine_event(&entry),
+                            Err(err) => scanner.report_error(&path, ErrorCode::Quarantine, err),
+                        }
+                    }
+                    Err(err) => scanner.report_error(&path, ErrorCode::Analysis, err),
+                    _ => {}
+                }
+            }
+        });
+        *slot = Some(ActiveMonitor { watcher, worker });
+        let _ = self
+            .scanner
+            .events
+            .send(Event::RealtimeProtectionStatusChanged {
+                enabled: true,
+                monitored_paths: paths,
+                timestamp: Utc::now(),
+            });
+        Ok(())
+    }
+
+    pub async fn disable_realtime_protection(&mut self) -> Result<(), AmaruError> {
+        let _change = self.monitor_changes.lock().await;
+        let active = self.monitor.lock().take();
+        if let Some(mut monitor) = active {
+            monitor
+                .watcher
+                .stop()
+                .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
+            monitor.worker.abort();
+            let _ = (&mut monitor.worker).await;
+            let _ = self
+                .scanner
+                .events
+                .send(Event::RealtimeProtectionStatusChanged {
+                    enabled: false,
+                    monitored_paths: vec![],
+                    timestamp: Utc::now(),
+                });
+        }
+        Ok(())
+    }
+
+    pub async fn init_core_services(&mut self) -> Result<(), AmaruError> {
+        if self.core_services.is_some() {
+            return Ok(());
+        }
+        let (tx, mut rx) = mpsc::channel(128);
+        let core = CoreServices::from_amaru(self.clone(), self.config().clone(), tx)?;
+        self.core_services = Some(Arc::new(tokio::sync::Mutex::new(core)));
+        let events = self.scanner.events.clone();
+        tokio::spawn(async move {
+            while let Some(notification) = rx.recv().await {
+                let payload = match notification {
+                    CoreNotification::UpdateAvailable {
+                        component,
+                        version,
+                        size,
+                        timestamp,
+                    } => Some((
+                        events::UpdateStatus::Starting,
+                        format!(
+                            "{component} {version}{}",
+                            size.map(|bytes| format!(" ({bytes} bytes)"))
+                                .unwrap_or_default()
+                        ),
+                        timestamp,
+                    )),
+                    CoreNotification::UpdateApplied {
+                        component,
+                        version,
+                        timestamp,
+                    } => Some((
+                        events::UpdateStatus::Completed { version },
+                        component,
+                        timestamp,
+                    )),
+                    _ => None,
+                };
+                if let Some((status, details, timestamp)) = payload {
+                    let _ = events.send(Event::UpdateEvent {
+                        update_type: events::UpdateType::YaraRules,
+                        status,
+                        details,
+                        timestamp,
+                    });
+                }
+            }
+        });
+        Ok(())
+    }
+
+    fn core(&self) -> Result<&tokio::sync::Mutex<CoreServices>, AmaruError> {
+        self.core_services.as_deref().ok_or_else(|| {
+            AmaruError::InitializationError("Integrated services are unavailable".into())
+        })
+    }
+    pub async fn integrated_scan_file(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<IntegratedScanResult, AmaruError> {
+        self.core()?.lock().await.scan_file(path).await
+    }
+    pub async fn enable_integrated_realtime_protection(&mut self) -> Result<bool, AmaruError> {
+        self.core()?.lock().await.enable_realtime_protection().await
+    }
+    pub async fn disable_integrated_realtime_protection(&mut self) -> Result<bool, AmaruError> {
+        self.core()?
+            .lock()
+            .await
+            .disable_realtime_protection()
+            .await
+    }
+    pub async fn check_core_updates(&self) -> Result<bool, AmaruError> {
+        self.core()?.lock().await.check_updates().await
+    }
+    pub async fn integrated_quarantine_file(
+        &self,
+        path: impl AsRef<Path>,
+        reason: &str,
+    ) -> Result<(), AmaruError> {
+        self.quarantine_file(path, reason)?;
+        Ok(())
+    }
+    pub async fn integrated_restore_file(&self, id: &str) -> Result<PathBuf, AmaruError> {
+        self.restore_quarantined(id)
+    }
+}
+
+#[cfg(windows)]
+impl Amaru {
     /// Inicia el servicio de Amaru
     pub fn start_service() -> windows_service::Result<()> {
         service::start_service()
     }
-    
+
     /// Detiene el servicio de Amaru
     pub fn stop_service() -> windows_service::Result<()> {
         service::stop_service()
     }
-    
+
     /// Instala el servicio de Amaru
     pub fn install_service() -> windows_service::Result<()> {
         service::install_service()
     }
-    
+
     /// Desinstala el servicio de Amaru
     pub fn uninstall_service() -> windows_service::Result<()> {
         service::uninstall_service()
     }
-    
+
     /// Obtiene el estado del servicio
-    pub fn get_service_status() -> windows_service::Result<windows_service::service::ServiceStatus> {
+    pub fn get_service_status() -> windows_service::Result<windows_service::service::ServiceStatus>
+    {
         service::get_service_status()
     }
-    
+
     /// Crea un nuevo cliente IPC para comunicarse con el servicio
     pub fn create_ipc_client() -> Result<ipc::IpcClient, ipc::IpcError> {
         ipc::IpcClient::connect()
     }
-    
-    /// Estado del servicio
-    #[derive(Debug, Clone)]
-    pub struct ServiceState {
-        pub is_running: bool,
-        pub uptime: Duration,
-        pub files_monitored: usize,
-        pub threats_detected: usize,
-        pub scan_in_progress: bool,
-        pub scan_progress: Option<ScanProgress>,
-        pub last_update: chrono::DateTime<chrono::Utc>,
-    }
-    
-    #[derive(Debug, Clone)]
-    pub struct ScanProgress {
-        pub files_scanned: usize,
-        pub files_total: usize,
-        pub current_file: PathBuf,
-        pub start_time: chrono::DateTime<chrono::Utc>,
-    }
-    
+
     /// Obtiene el estado actual del servicio
     pub async fn get_service_state() -> Result<ServiceState, AmaruError> {
-        let client = Self::create_ipc_client()
-            .map_err(|e| AmaruError::Internal(e.to_string()))?;
-            
+        let mut client =
+            Self::create_ipc_client().map_err(|e| AmaruError::Internal(e.to_string()))?;
+
         match client.get_status()? {
-            ipc::IpcResponse::Status { 
+            ipc::IpcResponse::Status {
                 is_running,
                 uptime_secs,
                 files_monitored,
@@ -843,18 +977,19 @@ impl Amaru {
                             files_scanned,
                             files_total,
                             current_file,
+                            start_time,
                         } => Some(ScanProgress {
                             files_scanned,
                             files_total,
                             current_file: PathBuf::from(current_file),
-                            start_time: chrono::Utc::now() - chrono::Duration::seconds(uptime_secs as i64),
+                            start_time,
                         }),
                         _ => None,
                     }
                 } else {
                     None
                 };
-                
+
                 Ok(ServiceState {
                     is_running,
                     uptime: Duration::from_secs(uptime_secs),
@@ -865,51 +1000,59 @@ impl Amaru {
                     last_update: chrono::Utc::now(),
                 })
             }
-            _ => Err(AmaruError::Internal("Respuesta inesperada del servicio".into())),
+            _ => Err(AmaruError::Internal(
+                "Respuesta inesperada del servicio".into(),
+            )),
         }
     }
-    
+
     /// Inicia un escaneo a través del servicio
     pub async fn service_start_scan<P: AsRef<Path>>(&self, path: P) -> Result<(), AmaruError> {
-        let mut client = Self::create_ipc_client()
-            .map_err(|e| AmaruError::Internal(e.to_string()))?;
-            
+        let mut client =
+            Self::create_ipc_client().map_err(|e| AmaruError::Internal(e.to_string()))?;
+
         match client.start_scan(path.as_ref().to_string_lossy().into_owned())? {
             ipc::IpcResponse::Ok => Ok(()),
             ipc::IpcResponse::Error(msg) => Err(AmaruError::Internal(msg)),
-            _ => Err(AmaruError::Internal("Respuesta inesperada del servicio".into())),
+            _ => Err(AmaruError::Internal(
+                "Respuesta inesperada del servicio".into(),
+            )),
         }
     }
-    
+
     /// Detiene el escaneo actual a través del servicio
     pub async fn service_stop_scan(&self) -> Result<(), AmaruError> {
-        let mut client = Self::create_ipc_client()
-            .map_err(|e| AmaruError::Internal(e.to_string()))?;
-            
+        let mut client =
+            Self::create_ipc_client().map_err(|e| AmaruError::Internal(e.to_string()))?;
+
         match client.stop_scan()? {
             ipc::IpcResponse::Ok => Ok(()),
             ipc::IpcResponse::Error(msg) => Err(AmaruError::Internal(msg)),
-            _ => Err(AmaruError::Internal("Respuesta inesperada del servicio".into())),
+            _ => Err(AmaruError::Internal(
+                "Respuesta inesperada del servicio".into(),
+            )),
         }
     }
-    
+
     /// Actualiza las reglas YARA a través del servicio
     pub async fn service_update_rules(&self) -> Result<(), AmaruError> {
-        let mut client = Self::create_ipc_client()
-            .map_err(|e| AmaruError::Internal(e.to_string()))?;
-            
+        let mut client =
+            Self::create_ipc_client().map_err(|e| AmaruError::Internal(e.to_string()))?;
+
         match client.update_rules()? {
             ipc::IpcResponse::Ok => Ok(()),
             ipc::IpcResponse::Error(msg) => Err(AmaruError::Internal(msg)),
-            _ => Err(AmaruError::Internal("Respuesta inesperada del servicio".into())),
+            _ => Err(AmaruError::Internal(
+                "Respuesta inesperada del servicio".into(),
+            )),
         }
     }
-    
+
     /// Obtiene estadísticas del servicio
     pub async fn get_service_stats(&self) -> Result<ServiceStats, AmaruError> {
-        let mut client = Self::create_ipc_client()
-            .map_err(|e| AmaruError::Internal(e.to_string()))?;
-            
+        let mut client =
+            Self::create_ipc_client().map_err(|e| AmaruError::Internal(e.to_string()))?;
+
         match client.get_service_stats()? {
             ipc::IpcResponse::ServiceStats {
                 cpu_usage,
@@ -920,324 +1063,12 @@ impl Amaru {
                 memory_usage,
                 scan_queue_size,
             }),
-            _ => Err(AmaruError::Internal("Respuesta inesperada del servicio".into())),
+            _ => Err(AmaruError::Internal(
+                "Respuesta inesperada del servicio".into(),
+            )),
         }
-    }
-    
-    /// Initializes the heuristic engine
-    ///
-    /// # Arguments
-    /// * `config` - Optional configuration for the heuristic engine
-    ///
-    /// # Errors
-    /// Returns an error if the heuristic engine cannot be initialized
-    pub fn init_heuristic_engine(&mut self, config: Option<HeuristicConfig>) -> Result<(), AmaruError> {
-        // Use provided config or create from existing settings
-        let heuristic_config = config.unwrap_or_else(|| HeuristicConfig {
-            confidence_threshold: self.config.heuristic_config.confidence_threshold,
-            max_analysis_time_ms: self.config.heuristic_config.max_analysis_time_ms,
-            enable_memory_scanning: self.config.heuristic_config.enable_memory_scanning,
-        });
-        
-        // Create and initialize the heuristic engine
-        let engine = HeuristicEngine::new(heuristic_config)
-            .map_err(|e| AmaruError::InitializationError(format!("Failed to initialize heuristic engine: {}", e)))?;
-            
-        // Store the initialized engine
-        self.heuristic_engine = Some(engine);
-        
-        // Update configuration
-        self.config.enable_heuristic_engine = true;
-        
-        // Log successful initialization
-        info!("Heuristic engine initialized successfully");
-        
-        Ok(())
-    }
-    
-    /// Optimiza los recursos del sistema según la configuración actual
-    pub async fn optimize_resources(&self) -> Result<(), AmaruError> {
-        let config = self.config.clone();
-        
-        // Limpiar caché de escaneo si está demasiado grande
-        let cache_size = self.scan_cache.len();
-        if cache_size > 10000 {
-            debug!("Limpiando caché de escaneo (tamaño actual: {})", cache_size);
-            self.scan_cache.retain(|_, (_, timestamp)| {
-                timestamp.elapsed() < Duration::from_secs(3600) // Mantener solo la última hora
-            });
-        }
-        
-        // Optimizar hilos de análisis según configuración
-        if let Some(ref behavior_analyzer) = self.behavior_analyzer {
-            behavior_analyzer.optimize_thread_pool(
-                if config.performance_config.low_resource_mode { 2 } else { 4 }
-            ).await;
-        }
-        
-        // Aplicar límites de memoria para análisis
-        if config.performance_config.low_resource_mode {
-            if let Some(ref heuristic_engine) = self.heuristic_engine {
-                heuristic_engine.set_memory_limit(256 * 1024 * 1024); // 256 MB
-            }
-        }
-        
-        Ok(())
-    }
-    
-    /// Inicializa los servicios core integrados
-    ///
-    /// Esto establece la comunicación entre el sistema de detección de comportamientos,
-    /// el sistema de actualizaciones, el sistema de cuarentena y el módulo de análisis
-    /// en tiempo real para proporcionar una protección más completa y eficiente.
-    pub async fn init_core_services(&mut self) -> Result<(), AmaruError> {
-        // Asegurarse de que los motores principales estén inicializados
-        if self.yara_engine.is_none() {
-            self.yara_engine = Some(YaraEngine::new(&self.config.yara_rules_path)
-                .map_err(|e| AmaruError::Yara(e.to_string()))?);
-        }
-        
-        if self.heuristic_engine.is_none() {
-            self.init_heuristic_engine(None)?;
-        }
-        
-        // Configurar canal de notificaciones para los servicios core
-        let (notif_tx, mut notif_rx) = mpsc::channel::<CoreNotification>(100);
-        
-        // Inicializar servicios core
-        let core_services = CoreServices::new(self.config.clone(), notif_tx)
-            .map_err(|e| AmaruError::InitializationError(format!(
-                "Error al inicializar los servicios core: {}", e
-            )))?;
-        
-        let core_services = Arc::new(tokio::sync::Mutex::new(core_services));
-        self.core_services = Some(core_services.clone());
-        
-        // Configurar manejo de notificaciones de servicios core
-        let event_channel = self.event_channel.clone();
-        tokio::spawn(async move {
-            while let Some(notification) = notif_rx.recv().await {
-                match notification {
-                    CoreNotification::ThreatDetected { path, threat_type, confidence, description, timestamp } => {
-                        let risk_level = if confidence >= 90 {
-                            RiskLevel::Critical
-                        } else if confidence >= 70 {
-                            RiskLevel::High
-                        } else if confidence >= 50 {
-                            RiskLevel::Medium
-                        } else {
-                            RiskLevel::Low
-                        };
-                        
-                        let threat_details = ThreatDetails {
-                            path: PathBuf::from(path.clone()),
-                            name: threat_type.clone(),
-                            description: description.clone(),
-                            detection_date: timestamp,
-                            signature_type: "Integrated".to_string(),
-                            recommended_action: "Quarantine".to_string(),
-                        };
-                        
-                        event_channel.send(Event::ThreatDetected {
-                            path: PathBuf::from(path),
-                            threat_type: ThreatType::from_str(&threat_type),
-                            risk_level,
-                            details: threat_details,
-                        });
-                    },
-                    CoreNotification::FileQuarantined { original_path, reason, timestamp } => {
-                        event_channel.send(Event::FileQuarantined {
-                            path: PathBuf::from(original_path),
-                            reason,
-                        });
-                    },
-                    CoreNotification::FileRestored { original_path, timestamp } => {
-                        event_channel.send(Event::FileRestored {
-                            path: PathBuf::from(original_path),
-                        });
-                    },
-                    CoreNotification::UpdateAvailable { component, version, size, timestamp } => {
-                        event_channel.send(Event::UpdateAvailable {
-                            component,
-                            version,
-                            size,
-                            timestamp,
-                        });
-                    },
-                    CoreNotification::UpdateApplied { component, version, timestamp } => {
-                        event_channel.send(Event::UpdateApplied {
-                            component,
-                            version,
-                            timestamp,
-                        });
-                    },
-                    CoreNotification::RealtimeProtectionStatus { enabled, monitored_paths, timestamp } => {
-                        event_channel.send(Event::RealtimeProtectionStatusChanged {
-                            enabled,
-                            monitored_paths,
-                            timestamp,
-                        });
-                    },
-                }
-            }
-        });
-        
-        info!("Servicios core inicializados correctamente");
-        Ok(())
-    }
-    
-    /// Realiza un análisis integrado de un archivo utilizando todos los servicios core
-    ///
-    /// Este método combina el análisis de YARA, análisis heurístico y detección de comportamientos
-    /// para proporcionar un resultado completo sobre un archivo.
-    pub async fn integrated_scan_file<P: AsRef<Path>>(&self, path: P) -> Result<IntegratedScanResult, AmaruError> {
-        if let Some(core_services) = &self.core_services {
-            let guard = core_services.lock().await;
-            guard.scan_file(path).await
-        } else {
-            Err(AmaruError::Internal("Los servicios core no están inicializados".to_string()))
-        }
-    }
-    
-    /// Habilita la protección en tiempo real integrada con todos los servicios
-    ///
-    /// Activa el monitoreo en tiempo real utilizando YARA, heurística y análisis de comportamiento
-    pub async fn enable_integrated_realtime_protection(&mut self) -> Result<bool, AmaruError> {
-        if let Some(core_services) = &self.core_services {
-            let mut guard = core_services.lock().await;
-            guard.enable_realtime_protection().await
-        } else {
-            Err(AmaruError::Internal("Los servicios core no están inicializados".to_string()))
-        }
-    }
-    
-    /// Deshabilita la protección en tiempo real integrada
-    pub async fn disable_integrated_realtime_protection(&mut self) -> Result<bool, AmaruError> {
-        if let Some(core_services) = &self.core_services {
-            let mut guard = core_services.lock().await;
-            guard.disable_realtime_protection().await
-        } else {
-            Err(AmaruError::Internal("Los servicios core no están inicializados".to_string()))
-        }
-    }
-    
-    /// Verifica si hay actualizaciones disponibles
-    pub async fn check_core_updates(&self) -> Result<bool, AmaruError> {
-        if let Some(core_services) = &self.core_services {
-            let guard = core_services.lock().await;
-            guard.check_updates().await
-        } else {
-            Err(AmaruError::Internal("Los servicios core no están inicializados".to_string()))
-        }
-    }
-    
-    /// Coloca un archivo en cuarentena utilizando el sistema integrado
-    pub async fn integrated_quarantine_file<P: AsRef<Path>>(&self, path: P, reason: &str) -> Result<(), AmaruError> {
-        if let Some(core_services) = &self.core_services {
-            let guard = core_services.lock().await;
-            guard.quarantine_file(path, reason)?;
-            Ok(())
-        } else {
-            Err(AmaruError::Internal("Los servicios core no están inicializados".to_string()))
-        }
-    }
-    
-    /// Restaura un archivo de cuarentena utilizando el sistema integrado
-    pub async fn integrated_restore_file(&self, entry_id: &str) -> Result<PathBuf, AmaruError> {
-        if let Some(core_services) = &self.core_services {
-            let guard = core_services.lock().await;
-            guard.restore_from_quarantine(entry_id)
-        } else {
-            Err(AmaruError::Internal("Los servicios core no están inicializados".to_string()))
-        }
-    }
-
-    /// Ejecuta un escaneo con optimización de recursos
-    pub async fn scan_file_optimized<P: AsRef<Path>>(&self, path: P) -> Result<EnhancedScanResult, AmaruError> {
-        let path = path.as_ref();
-        
-        // Verificar si tenemos una versión cacheada reciente
-        let cache_key = path.to_string_lossy().to_string();
-        if let Some(cached) = self.scan_cache.get(&path.to_path_buf()) {
-            if cached.1.elapsed() < Duration::from_secs(300) { // Caché válida por 5 minutos
-                debug!("Usando resultado cacheado para {}", path.display());
-                return Ok(EnhancedScanResult {
-                    file_path: path.to_path_buf(),
-                    yara_matches: cached.0.yara_matches.clone(),
-                    heuristic_result: cached.0.heuristic_result.clone(),
-                    is_malicious: cached.0.risk_level >= RiskLevel::Medium,
-                    scan_time: 0.0,
-                });
-            }
-        }
-        
-        // Verificar si el archivo excede el tamaño máximo
-        match std::fs::metadata(path) {
-            Ok(metadata) => {
-                if metadata.len() > self.config.scan_config.max_file_size {
-                    warn!("Archivo excede el tamaño máximo: {}", path.display());
-                    return Err(AmaruError::Analysis(format!(
-                        "El archivo excede el tamaño máximo permitido ({} bytes)",
-                        self.config.scan_config.max_file_size
-                    )));
-                }
-            },
-            Err(e) => return Err(AmaruError::Io(e)),
-        }
-        
-        let start_time = std::time::Instant::now();
-        
-        // Ejecutar escaneo YARA
-        let yara_result = if let Some(ref engine) = self.yara_engine {
-            match engine.scan_file(path) {
-                Ok(result) => result,
-                Err(e) => return Err(AmaruError::Yara(format!("Error en escaneo YARA: {}", e))),
-            }
-        } else {
-            return Err(AmaruError::Yara("Motor YARA no inicializado".into()));
-        };
-        
-        // Ejecutar análisis heurístico si está habilitado y no hay coincidencias YARA
-        let heuristic_result = if self.config.heuristic_analysis && yara_result.matches.is_empty() {
-            if let Some(ref engine) = self.heuristic_engine {
-                engine.analyze_file(path).ok().flatten()
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        
-        let is_malicious = !yara_result.matches.is_empty() || 
-                          heuristic_result.as_ref().map_or(false, |r| r.confidence > self.config.heuristic_threshold as f32);
-        
-        let scan_time = start_time.elapsed().as_secs_f64();
-        
-        let result = EnhancedScanResult {
-            file_path: path.to_path_buf(),
-            yara_matches: yara_result.matches,
-            heuristic_result,
-            is_malicious,
-            scan_time,
-        };
-        
-        // Guardar en caché
-        self.scan_cache.insert(
-            path.to_path_buf(),
-            (ScanResult {
-                path: path.to_path_buf(),
-                yara_matches: vec![],
-                static_analysis: None,
-                risk_level: if is_malicious { RiskLevel::High } else { RiskLevel::Safe },
-                threat_details: None,
-                behaviors: None,
-            }, std::time::Instant::now())
-        );
-        
-        Ok(result)
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct ServiceStats {
     pub cpu_usage: f32,
@@ -1255,183 +1086,208 @@ pub struct EnhancedScanResult {
     pub scan_time: f64,
 }
 
-/// Extensión del ThreatType para facilitar la conversión desde cadenas
-impl ThreatType {
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            s if s.starts_with("Malware") => ThreatType::Malware,
-            s if s.starts_with("Ransomware") => ThreatType::Ransomware,
-            s if s.starts_with("PUA") || s.starts_with("PUP") => ThreatType::PotentiallyUnwantedApp,
-            s if s.starts_with("Suspicious") => ThreatType::SuspiciousFile,
-            s if s.starts_with("Exploit") => ThreatType::Exploit,
-            s if s.starts_with("Rootkit") => ThreatType::Rootkit,
-            s if s.contains("Adware") => ThreatType::Adware,
-            s if s.contains("Spyware") => ThreatType::Spyware,
-            s if s.contains("Keylogger") => ThreatType::Keylogger,
-            s if s.contains("Backdoor") => ThreatType::Backdoor,
-            s if s.contains("Trojan") => ThreatType::Trojan,
-            s if s.contains("Worm") => ThreatType::Worm,
-            s if s.contains("Virus") => ThreatType::Virus,
-            _ => ThreatType::Unknown,
-        }
-    }
-}
-
-// Extender Event para los nuevos tipos de eventos
 impl Event {
     pub fn is_threat_event(&self) -> bool {
-        matches!(self, 
-            Event::ThreatDetected { .. } | 
-            Event::FileQuarantined { .. } |
-            Event::FileRestored { .. }
+        matches!(
+            self,
+            Self::ThreatDetected { .. } | Self::FileQuarantined { .. } | Self::FileRestored { .. }
         )
     }
-    
+
     pub fn is_update_event(&self) -> bool {
-        matches!(self,
-            Event::UpdateAvailable { .. } |
-            Event::UpdateApplied { .. }
-        )
+        matches!(self, Self::UpdateEvent { .. })
     }
-    
+
     pub fn is_status_event(&self) -> bool {
-        matches!(self,
-            Event::RealtimeProtectionStatusChanged { .. } |
-            Event::ScanStarted { .. } |
-            Event::ScanProgress { .. } |
-            Event::ScanCompleted { .. }
-        )
+        matches!(self, Self::RealtimeProtectionStatusChanged { .. })
     }
 }
 
 #[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod pe_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::io::Write;
-    
+    use tempfile::tempdir;
+
+    fn scan_config(root: &Path) -> io::Result<Config> {
+        let rules = root.join("rules");
+        std::fs::create_dir(&rules)?;
+        std::fs::write(
+            rules.join("test.yar"),
+            r#"rule test_rule { meta: severity = "high" strings: $a = "amaru-test-marker" condition: $a }"#,
+        )?;
+        let mut config = Config {
+            yara_rules_path: rules,
+            monitored_paths: vec![root.to_owned()],
+            ..Default::default()
+        };
+        config.quarantine_config.quarantine_path = root.join("quarantine");
+        Ok(config)
+    }
+
     #[tokio::test]
-    async fn test_scan_file() -> Result<(), AmaruError> {
-        let temp_dir = tempdir()?;
-        
-        // Crear directorio de reglas
-        let rules_dir = temp_dir.path().join("rules");
-        std::fs::create_dir(&rules_dir)?;
-        
-        // Crear regla YARA
-        let rule_content = r#"
-rule test_rule {
-    meta:
-        description = "Test rule"
-    strings:
-        $s1 = "malicious"
-    condition:
-        any of them
-}
-"#;
-        std::fs::write(rules_dir.join("test.yar"), rule_content)?;
-        
-        // Crear archivo de prueba
-        let test_file = temp_dir.path().join("test.exe");
-        let content = b"This is a malicious test file";
-        std::fs::File::create(&test_file)?.write_all(content)?;
-        
-        // Crear configuración
-        let mut config = Config::default();
-        config.yara_rules_path = rules_dir;
-        config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
-        
-        // Crear instancia de Amaru
+    async fn evidence_follows_file_contents_and_active_rules() -> Result<(), AmaruError> {
+        let temp = tempdir()?;
+        let config = scan_config(temp.path())?;
+        let rule = config.yara_rules_path.join("test.yar");
+        let path = temp.path().join("test.exe");
+        std::fs::write(&path, b"amaru-test-marker")?;
         let amaru = Amaru::new(config).await?;
-        
-        // Escanear archivo
-        let result = amaru.scan_file(&test_file).await?;
-        
-        // Verificar resultado
-        assert!(!result.yara_matches.is_empty());
-        assert_eq!(result.risk_level, RiskLevel::Medium);
-        assert!(result.threat_details.is_some());
-        
+        let first = amaru.scan_file(&path).await?;
+        assert_eq!(first.risk_level, RiskLevel::High);
+        assert_eq!(first.yara_matches[0].rule_name, "test_rule");
+        assert_eq!(
+            first.threat_details.as_ref().unwrap().file_hash,
+            first.sha256
+        );
+        let cached = amaru.scan_file(&path).await?;
+        assert_eq!(cached.yara_matches[0].strings[0].data, b"amaru-test-marker");
+        std::fs::write(&path, b"other-test-marker")?;
+        let changed = amaru.scan_file(&path).await?;
+        assert_ne!(first.sha256, changed.sha256);
+        assert!(changed.threat_details.is_none());
+        assert!(amaru
+            .quarantine_detected(&first, "stale detection")
+            .is_err());
+        assert_eq!(std::fs::read(&path)?, b"other-test-marker");
+        std::fs::write(&rule, "rule invalid {")?;
+        assert!(amaru.update_yara_rules().await.is_err());
+        std::fs::write(&path, b"amaru-test-marker")?;
+        assert_eq!(amaru.scan_file(&path).await?.yara_matches.len(), 1);
+        std::fs::write(&rule, "rule revised { condition: false }")?;
+        amaru.update_yara_rules().await?;
+        let revised = amaru.scan_file(&path).await?;
+        assert!(revised.yara_matches.is_empty() && revised.threat_details.is_none());
         Ok(())
     }
-    
+
     #[tokio::test]
-    async fn test_realtime_protection() -> Result<(), AmaruError> {
+    async fn pe_import_evidence_is_distinct_from_incidental_strings() -> Result<(), AmaruError> {
+        let temp = tempdir()?;
+        let config = scan_config(temp.path())?;
+        let amaru = Amaru::new(config).await?;
+        let path = temp.path().join("metadata.exe");
+        let incidental = pe_fixture::import_fixture(&[], b"NtCreateFile WSAConnect");
+        std::fs::write(&path, incidental)?;
+        let result = amaru.scan_file_with_options(&path, true, false).await?;
+        let has_import = |p: &yara_engine::heuristic::PatternMatch| {
+            matches!(
+                p.pattern_name.as_str(),
+                "rootkit_system_hook" | "backdoor_remote_connection"
+            )
+        };
+        assert!(!result
+            .heuristic_result
+            .unwrap()
+            .patterns
+            .iter()
+            .any(has_import));
+        let imports = pe_fixture::import_fixture(&["NtCreateFile", "WSAConnect"], b"");
+        std::fs::write(&path, imports)?;
+        let result = amaru.scan_file_with_options(&path, true, false).await?;
+        assert_eq!(
+            result
+                .heuristic_result
+                .unwrap()
+                .patterns
+                .iter()
+                .filter(|p| has_import(p))
+                .count(),
+            2
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scan_errors_are_distinct_from_clean_files() -> Result<(), AmaruError> {
+        let temp = tempdir()?;
+        let mut config = scan_config(temp.path())?;
+        config.scan_config.max_file_size = 4;
+        let amaru = Amaru::new(config).await?;
+        let path = temp.path().join("input");
+        assert!(matches!(
+            amaru.scan_file(&path).await,
+            Err(AmaruError::Io(_))
+        ));
+        std::fs::write(&path, b"12345")?;
+        assert!(matches!(
+            amaru.scan_file(&path).await,
+            Err(AmaruError::FileTooLarge(_))
+        ));
+        std::fs::write(&path, b"1234")?;
+        let clean = amaru.scan_file_with_options(&path, false, false).await?;
+        assert_eq!(clean.risk_level, RiskLevel::Low);
+        assert!(clean.threat_details.is_none() && clean.heuristic_result.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn realtime_reports_file_without_moving_it_by_default() -> Result<(), AmaruError> {
+        let temp = tempdir()?;
+        let config = scan_config(temp.path())?;
+        let mut amaru = Amaru::new(config).await?;
+        let receiver = amaru.event_receiver();
+        amaru.enable_realtime_protection().await?;
+        let path = temp.path().canonicalize()?.join("test.exe");
+        std::fs::write(&path, b"amaru-test-marker")?;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if receiver.try_iter().any(|event| {
+                    matches!(event, Event::ThreatDetected { path: ref p, .. } if p == &path)
+                }) { break; }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the real-time monitor should scan the new file");
+        assert!(path.is_file());
+        assert!(amaru.monitor_stats().unwrap().threats_detected >= 1);
+        amaru.disable_realtime_protection().await?;
+        assert!(!amaru.realtime_enabled());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_eicar_detection() -> Result<(), AmaruError> {
         let temp_dir = tempdir()?;
-        
-        // Crear directorio de reglas
+
+        // Create rules directory
         let rules_dir = temp_dir.path().join("rules");
         std::fs::create_dir(&rules_dir)?;
-        
-        // Crear regla YARA
-        let rule_content = r#"
-rule test_rule {
-    meta:
-        description = "Test rule"
-    strings:
-        $s1 = "malicious"
-    condition:
-        any of them
-}
-"#;
-        std::fs::write(rules_dir.join("test.yar"), rule_content)?;
-        
-        // Crear configuración
+
+        // Create EICAR test file
+        let eicar_file = temp_dir.path().join("eicar.txt");
+        let eicar_content =
+            b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+        std::fs::File::create(&eicar_file)?.write_all(eicar_content)?;
+
+        // Create configuration
         let mut config = Config::default();
         config.yara_rules_path = rules_dir;
         config.monitored_paths = vec![temp_dir.path().to_path_buf()];
         config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
-        
-        // Crear instancia de Amaru
-        let mut amaru = Amaru::new(config).await?;
-        
-        // Habilitar protección en tiempo real
-        amaru.enable_realtime_protection().await?;
-        
-        // Crear archivo malicioso
-        let test_file = temp_dir.path().join("test.exe");
-        let content = b"This is a malicious test file";
-        std::fs::File::create(&test_file)?.write_all(content)?;
-        
-        // Esperar eventos
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        
-        // Deshabilitar protección
-        amaru.disable_realtime_protection().await?;
-        
-        Ok(())
-    }
-    
-    #[tokio::test]
-    async fn test_eicar_detection() -> Result<(), AmaruError> {
-        let temp_dir = tempdir()?;
-        
-        // Create rules directory
-        let rules_dir = temp_dir.path().join("rules");
-        std::fs::create_dir(&rules_dir)?;
-        
-        // Create EICAR test file
-        let eicar_file = temp_dir.path().join("eicar.txt");
-        let eicar_content = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
-        std::fs::File::create(&eicar_file)?.write_all(eicar_content)?;
-        
-        // Create configuration
-        let mut config = Config::default();
-        config.yara_rules_path = rules_dir;
-        config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
-        
+
         // Create Amaru instance
         let amaru = Amaru::new(config).await?;
-        
+
         // Scan EICAR file
         let result = amaru.scan_file(&eicar_file).await?;
-        
+
         // Verify test file detection
-        assert!(result.behaviors.is_some(), "EICAR test file should be detected");
+        assert!(
+            result.behaviors.is_some(),
+            "EICAR test file should be detected"
+        );
         if let Some(behaviors) = &result.behaviors {
-            assert!(behaviors.iter().any(|b| matches!(b.behavior_type, MaliciousBehaviorType::TestFile)));
+            assert!(behaviors
+                .iter()
+                .any(|b| matches!(b.behavior_type, MaliciousBehaviorType::TestFile)));
         }
-        
+
         Ok(())
     }
-} 
+}

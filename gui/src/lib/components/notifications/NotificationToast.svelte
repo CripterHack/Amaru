@@ -83,6 +83,7 @@
 
 {#if visible}
   <div 
+    role="status"
     class="fixed z-50 {positionClasses[position]} max-w-sm w-full"
     in:fly={{ y: 20, duration: 500 }}
     out:fade={{ duration: 300 }}

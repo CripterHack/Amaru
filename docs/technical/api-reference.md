@@ -2,7 +2,22 @@
 
 ## Introducción
 
-Esta documentación describe las APIs disponibles en Amaru Antivirus para desarrolladores que desean integrar sus aplicaciones con nuestro sistema o extender su funcionalidad. Las APIs se dividen en diferentes categorías según su propósito y nivel de acceso.
+La fachada de integración descrita en este documento es un contrato de diseño. Las firmas con `CoreHandle`, los códigos numéricos y los ejemplos que importan `amaru_engine` requieren implementación y validación. La aplicación integrada mantiene su objetivo de Windows 11 x64.
+
+## Interfaces del repositorio
+
+| Componente | Entrada implementada | Evidencia |
+|---|---|---|
+| Reglas YARA | `YaraEngine::new` carga el catálogo. `scan_file` acepta una ruta y `scan_memory` acepta un búfer de bytes. | [Código](../../yara-engine/src/lib.rs) · [Pruebas de archivo y memoria](../../yara-engine/tests/signatures.rs) |
+| Monitor | `RealTimeMonitor::new`, `start`, `stop` y `get_state` gestionan eventos de archivos. | [Implementación y pruebas](../../realtime-monitor/src/lib.rs) |
+| Análisis estático | `Radare2Analyzer::analyze_file` analiza una ruta con Radare2. | [Implementación y pruebas](../../radare2-analyzer/src/lib.rs) |
+| Actualizaciones de reglas | `Updater::check_updates` consulta el manifiesto. `apply_update` verifica e instala el paquete. | [Código](../../updater/src/lib.rs) · [Pruebas de actualización](../../updater/tests/updates.rs) |
+
+### Resultados en la implementación actual
+
+`Amaru::new(config).await` carga la configuración y las reglas. `scan_file(path).await` devuelve evidencia de un archivo o un error. La lista de coincidencias YARA, las señales heurísticas y el riesgo acompañan al hash SHA-256. Un resultado de riesgo bajo sin evidencia representa un archivo analizado sin hallazgos. [Núcleo](../../src/lib.rs)
+
+La sesión del escritorio agrega los resultados individuales. Registra identificador, fechas, estado, duración, archivos analizados, omitidos y fallidos, hallazgos y acciones. La cancelación conserva los resultados obtenidos. La cuarentena del monitor aplica el umbral y comprueba el hash antes de confirmar el aislamiento. [Sesión de escritorio](../../gui/src-tauri/src/session.rs) · [Cuarentena](../../src/quarantine.rs) · [Estado de desarrollo](../../status_development.md)
 
 ## Índice
 
@@ -223,7 +238,7 @@ pub async fn subscribe_to_events(
 
 ## Interfaz de Línea de Comandos (CLI)
 
-Además de la API programática, Amaru proporciona una interfaz de línea de comandos con los siguientes comandos:
+Este catálogo conserva la propuesta de comandos de la fachada. Los comandos declarados por el ejecutable y su despacho se pueden consultar en el código. [Entrada de la CLI](../../src/main.rs)
 
 ```
 COMANDOS:
@@ -303,7 +318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Códigos de Estado y Errores
 
-Todos los módulos de la API devuelven errores tipados que pueden ser los siguientes:
+La fachada propuesta reserva estos códigos. Cada componente Rust implementado expone su propio tipo de error.
 
 | Código | Tipo | Descripción |
 |--------|------|-------------|
@@ -326,11 +341,11 @@ Al utilizar las APIs de Amaru, tenga en cuenta las siguientes consideraciones de
 3. **Rendimiento**: Las operaciones de escaneo son intensivas en recursos
 4. **Concurrencia**: Evite realizar múltiples operaciones de escaneo simultáneas
 
-## Limitaciones
+## Limitaciones previstas de la fachada
 
-- Las APIs están disponibles únicamente en Windows 10/11 (64-bit)
+- El diseño de la fachada contempla Windows 10/11 de 64 bits. La plataforma objetivo del producto es Windows 11 de 64 bits.
 - Algunas funcionalidades requieren privilegios administrativos
-- El número máximo de suscriptores de eventos está limitado a 100 por instancia
+- El límite propuesto es de 100 suscriptores de eventos por instancia. Su implementación y medición siguen pendientes.
 
 ## Próximas Funcionalidades
 
@@ -340,7 +355,4 @@ Al utilizar las APIs de Amaru, tenga en cuenta las siguientes consideraciones de
 
 ## Soporte y Contacto
 
-Para preguntas y soporte sobre la API, contacta a:
-
-- Correo: api-support@amaru-antivirus.com
-- Foro de desarrolladores: https://dev.amaru-antivirus.com 
+Para consultas sobre integraciones y errores reproducibles, utiliza el repositorio público. La disponibilidad del buzón y del foro de desarrolladores previstos en el diseño queda pendiente de confirmación. [Contacto del proyecto](../support/contact.md)

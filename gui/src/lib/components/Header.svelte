@@ -27,6 +27,7 @@
       case 'scan': return 'Scan';
       case 'quarantine': return 'Quarantine';
       case 'settings': return 'Settings';
+      case 'help': return 'Help';
       default: return 'Amaru Antivirus';
     }
   }

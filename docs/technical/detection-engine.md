@@ -1,6 +1,8 @@
 # Motor de Detección Amaru: Especificaciones Técnicas
 
-Este documento técnico proporciona información detallada sobre la arquitectura, algoritmos y métodos de implementación del motor de detección de Amaru Antivirus. Está dirigido a usuarios técnicos, investigadores de seguridad y desarrolladores.
+Esta especificación recoge el diseño del motor de detección. El catálogo actual reúne reglas YARA clásicas y admite una comprobación independiente con YARA-X. El motor Rust comprueba archivos y búferes con las reglas locales. La suite incluye EICAR y controles negativos. [Motor Rust](../../yara-engine/src/lib.rs) · [Prueba del catálogo](../../yara-engine/tests/signatures.rs) · [Validación con YARA-X](yara-x.md)
+
+El monitor de archivos y el análisis estático con Radare2 tienen implementaciones y pruebas propias. La integración del servicio Windows, las funciones de reputación en la nube, el análisis dinámico en sandbox y los modelos de aprendizaje automático requieren validaciones independientes. [Monitor](../../realtime-monitor/src/lib.rs) · [Analizador estático](../../radare2-analyzer/src/lib.rs) · [Estado del proyecto](../../status_development.md)
 
 ## Índice
 
@@ -14,9 +16,9 @@ Este documento técnico proporciona información detallada sobre la arquitectura
 
 ## Arquitectura del Motor
 
-El motor de detección de Amaru implementa una arquitectura modular de microservicios que permite escalar componentes individuales y actualizar módulos sin afectar el sistema completo.
+El diseño propone una arquitectura modular de microservicios para escalar componentes individuales y actualizarlos por separado. El workspace agrupa los motores implementados como crates de Rust. [Manifiesto](../../Cargo.toml)
 
-### Componentes Principales
+### Componentes previstos en la arquitectura
 
 ```
 +-------------------------+      +------------------------+      +------------------------+
@@ -68,7 +70,7 @@ El motor de detección de Amaru implementa una arquitectura modular de microserv
 - **Motor de Políticas**: Aplica reglas configuradas por el usuario
 - **Clasificador Final**: Determina la acción a tomar
 
-### Flujo de Datos
+### Flujo de datos previsto
 
 1. La capa de interceptación captura eventos (acceso a archivos, ejecución, conexiones)
 2. Los eventos se filtran mediante reglas de pre-procesamiento
@@ -121,7 +123,7 @@ rule TrojanX {
 
 ### Algoritmos de Machine Learning
 
-#### Modelos Implementados
+#### Modelos especificados para desarrollo
 
 - **Clasificadores basados en árboles**
   - Gradient Boosting Trees (XGBoost)
@@ -143,7 +145,7 @@ rule TrojanX {
   - Isolation Forest para detección de outliers
   - DBSCAN para clustering de comportamientos
 
-#### Características Utilizadas
+#### Características previstas para los modelos
 
 Para análisis estático:
 - Histogramas de n-gramas de bytes
@@ -171,7 +173,7 @@ Para análisis dinámico:
 
 ### Estructura de Base de Conocimiento
 
-La base de conocimiento utiliza un sistema de almacenamiento híbrido:
+El diseño de la base de conocimiento contempla almacenamiento híbrido. La distribución actual incluye el catálogo de archivos de reglas en el repositorio. [Catálogo](../../signatures)
 
 - **Base de Datos Principal**: Almacena metadatos, relaciones y configuraciones
   - Sistema: PostgreSQL/MariaDB
@@ -187,7 +189,7 @@ La base de conocimiento utiliza un sistema de almacenamiento híbrido:
 
 ### Representación de Patrones
 
-Los patrones de malware se representan mediante estructuras de datos especializadas:
+Los siguientes esquemas JSON ilustran la representación de patrones propuesta.
 
 #### Patrones Binarios
 
@@ -280,7 +282,7 @@ Los patrones de malware se representan mediante estructuras de datos especializa
 
 ### Sistema de Coincidencia de Patrones
 
-El motor implementa varios algoritmos de coincidencia optimizados:
+La especificación contempla los siguientes algoritmos y parámetros de coincidencia. La ruta de escaneo validada delega la coincidencia en YARA.
 
 - **Aho-Corasick**: Para búsqueda eficiente de múltiples patrones de cadenas
   - Complejidad: O(n + m + z) donde z es el número de coincidencias
@@ -341,7 +343,7 @@ El motor implementa varios algoritmos de coincidencia optimizados:
 
 ### Métricas de Rendimiento
 
-El sistema está optimizado para alcanzar los siguientes objetivos de rendimiento:
+La tabla fija objetivos para futuras pruebas. La revisión del repositorio no encontró mediciones publicadas de latencia, CPU ni memoria para estas cargas. El motor YARA clásico omite por defecto los archivos mayores de 100 MiB. Una medición de archivos grandes debe comprobar que se analizaron sus bytes. [Implementación del escaneo](../../yara-engine/src/lib.rs)
 
 | Operación | Tiempo Objetivo | Uso de CPU | Uso de Memoria |
 |-----------|-----------------|------------|----------------|
@@ -353,7 +355,7 @@ El sistema está optimizado para alcanzar los siguientes objetivos de rendimient
 
 ## Integración de API
 
-El motor de detección expone APIs para integración con otros componentes:
+Las firmas C siguientes definen la interfaz de integración prevista. La referencia de desarrollo identifica las entradas Rust disponibles. [Referencia de API](api-reference.md)
 
 ### APIs Internas
 
@@ -392,7 +394,7 @@ DETECTION_STATUS AmEngine_NotifyBehavior(
 
 ### Hooks de Extensibilidad
 
-El motor proporciona puntos de extensión para personalización:
+El diseño prevé estos puntos de extensión para personalización.
 
 ```c
 // Configuración de callback personalizado para decisión final
@@ -418,9 +420,9 @@ DETECTION_STATUS AmEngine_RegisterCustomAnalyzer(
 
 ## Métricas y Telemetría
 
-### Datos Recopilados
+### Datos previstos
 
-El sistema recopila (con consentimiento del usuario) datos anónimos para mejorar la detección:
+El diseño de telemetría propone recopilar las siguientes categorías con consentimiento del usuario. Su habilitación y destino deben comprobarse antes de describir una instalación que envíe datos.
 
 - **Métricas de Rendimiento**:
   - Tiempos de análisis por tipo de archivo
@@ -452,7 +454,7 @@ El sistema recopila (con consentimiento del usuario) datos anónimos para mejora
 
 ## Consideraciones de Implementación
 
-### Requisitos del Sistema
+### Recursos previstos para el diseño completo
 
 - **Mínimos**:
   - CPU: Arquitectura x86-64 con soporte SSE4.2
@@ -465,7 +467,7 @@ El sistema recopila (con consentimiento del usuario) datos anónimos para mejora
   - RAM: 4GB disponible para el motor
   - Almacenamiento SSD: 4GB para caché y base de conocimiento
 
-### Limitaciones Técnicas
+### Limitaciones previstas para el diseño completo
 
 - Análisis de archivos cifrados requiere interfaces específicas para cada formato
 - Algunos algoritmos avanzados pueden no estar disponibles en modo sin conexión
@@ -481,4 +483,4 @@ El sistema recopila (con consentimiento del usuario) datos anónimos para mejora
 
 ---
 
-> Nota: Este documento es exclusivamente para uso interno y proporciona información detallada sobre la implementación del motor de detección de Amaru Antivirus. Contacte al equipo de desarrollo para consultas específicas sobre la implementación. 
+Para contrastar el diseño con una versión concreta, consulta la revisión de código y su registro de validación. [Estado del proyecto](../../status_development.md)

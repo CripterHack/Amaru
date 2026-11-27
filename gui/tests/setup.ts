@@ -8,6 +8,25 @@ global.ResizeObserver = vi.fn().mockImplementation(() => ({
   disconnect: vi.fn(),
 }));
 
+// jsdom has no Web Animations timeline. Complete transitions on the next microtask.
+Object.defineProperty(Element.prototype, 'animate', {
+  configurable: true,
+  value() {
+    const animation = {
+      currentTime: 0,
+      playState: 'running',
+      onfinish: null as (() => void) | null,
+      cancel() { this.playState = 'idle'; }
+    };
+    queueMicrotask(() => {
+      if (animation.playState !== 'running') return;
+      animation.playState = 'finished';
+      animation.onfinish?.();
+    });
+    return animation;
+  }
+});
+
 // Mock window.matchMedia which is not available in jsdom
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

@@ -5,16 +5,25 @@
  * API integration, and event handling.
  */
 
-import { render, fireEvent, screen } from '@testing-library/svelte';
-import { vi } from 'vitest';
+import { render, fireEvent, screen, waitFor } from '@testing-library/svelte';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/tauri';
+import App from '../src/App.svelte';
 import Dashboard from '../src/routes/Dashboard.svelte';
-import { protectionStatus, threatStats, statusStore } from '../src/lib/stores/statusStore';
-import { tick } from 'svelte';
+const protectionStatus = {
+  enabled: true,
+  monitored_paths: [],
+  scanning_enabled: true,
+  last_updated: '2025-01-01T00:00:00Z',
+  version: '1.0.0'
+};
 
 // Mock Tauri API
 vi.mock('@tauri-apps/api/tauri', () => ({
   invoke: vi.fn((command, args) => {
     switch (command) {
+      case 'get_protection_status':
+        return Promise.resolve(protectionStatus);
       case 'get_threat_statistics':
         return Promise.resolve({
           total_detected: 5,
@@ -44,10 +53,13 @@ vi.mock('@tauri-apps/api/tauri', () => ({
             status: 'success'
           }
         ]);
+      case 'get_scan_progress':
+        return Promise.resolve(null);
       case 'get_scan_history':
         return Promise.resolve([]);
       case 'get_system_resources':
         return Promise.resolve({ cpu_usage: 10, memory_usage: 20 });
+      case 'start_quick_scan':
       case 'toggle_protection':
         return Promise.resolve();
       case 'toggle_protection_feature':
@@ -65,131 +77,84 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 describe('Dashboard Component', () => {
   beforeEach(() => {
-    // Reset mocks
     vi.clearAllMocks();
-    
-    // Reset stores
-    protectionStatus.set({
-      enabled: true,
-      monitored_paths: [],
-      scanning_enabled: true,
-      last_updated: new Date().toISOString(),
-      version: '1.0.0'
-    });
-    
-    statusStore.set({
-      is_protected: true,
-      last_scan: 'Never',
-      threats_detected: 0,
-      realtime_protection: true,
-      database_updated: 'Never',
-      system_load: 0
-    });
   });
 
-  test('renders dashboard with protection status', async () => {
-    const { getByText, queryByText } = render(Dashboard, {
-      protectionStatus: {
-        enabled: true,
-        monitored_paths: [],
-        scanning_enabled: true,
-        last_updated: new Date().toISOString(),
-        version: '1.0.0'
-      }
-    });
-
-    // Check that it renders the title
-    expect(getByText('Dashboard')).toBeTruthy();
-    
-    // Check protection status
-    expect(getByText('Protected')).toBeTruthy();
-    expect(queryByText('At Risk')).toBeFalsy();
-    
-    // Wait for API calls to complete
-    await tick();
-    
-    // Check that threat stats loaded
-    expect(getByText('Test.Malware.001')).toBeTruthy();
+  test('loads threats and shows the current protection status', async () => {
+    render(Dashboard, { protectionStatus });
+    expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.getByText('Protected')).toBeInTheDocument();
+    expect(await screen.findByText('Test.Malware.001')).toBeInTheDocument();
   });
 
-  test('toggles protection when button is clicked', async () => {
-    const { getByText } = render(Dashboard, {
-      protectionStatus: {
-        enabled: true,
-        monitored_paths: [],
-        scanning_enabled: true,
-        last_updated: new Date().toISOString(),
-        version: '1.0.0'
-      }
-    });
-
-    // Get the protection status toggle
-    const toggleButton = getByText('Protected');
-    
-    // Click the toggle
-    await fireEvent.click(toggleButton);
-    
-    // Check that API was called with correct arguments
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith('toggle_protection', { enable: false });
+  test('waits for backend confirmation before showing a protected system', async () => {
+    render(App);
+    expect(screen.getByText('Protection status unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('Protected')).toBeNull();
+    expect(await screen.findByRole('checkbox', { name: 'Protection' })).toBeChecked();
   });
 
-  test('starts scan when scan button is clicked', async () => {
-    const { getByText } = render(Dashboard, {
-      protectionStatus: {
-        enabled: true,
-        monitored_paths: [],
-        scanning_enabled: true,
-        last_updated: new Date().toISOString(),
-        version: '1.0.0'
-      }
-    });
-
-    // Get the scan button
-    const scanButton = getByText('Run Quick Scan');
-    
-    // Click the scan button
-    await fireEvent.click(scanButton);
-    
-    // Check that API was called
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith('start_quick_scan');
+  test('toggles protection using the application sidebar', async () => {
+    render(App);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_protection_status'));
+    await fireEvent.click(await screen.findByRole('checkbox', { name: 'Protection' }));
+    expect(invoke).toHaveBeenCalledWith('toggle_protection', { enable: false });
+    expect(await screen.findByText('At Risk')).toBeInTheDocument();
   });
 
-  test('toggles protection feature when toggle is clicked', async () => {
-    const { getAllByRole } = render(Dashboard, {
-      protectionStatus: {
-        enabled: true,
-        monitored_paths: [],
-        scanning_enabled: true,
-        last_updated: new Date().toISOString(),
-        version: '1.0.0'
-      }
-    });
-
-    // Get the feature toggles (checkboxes)
-    const checkboxes = getAllByRole('checkbox');
-    
-    // Click the first toggle
-    await fireEvent.click(checkboxes[0]);
-    
-    // Check that API was called with correct arguments
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith('toggle_protection_feature', { 
-      featureId: 'realtime', 
-      enable: false 
-    });
+  test('preserves the confirmed protection state when a toggle fails', async () => {
+    render(App);
+    const toggle = await screen.findByRole('checkbox', { name: 'Protection' });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.mocked(invoke).mockRejectedValueOnce(new Error('Service unavailable'));
+      await fireEvent.click(toggle);
+      expect(await screen.findByText('Failed to toggle protection: Error: Service unavailable')).toBeInTheDocument();
+      expect(toggle).toBeChecked();
+      expect(toggle).toBeEnabled();
+      expect(screen.queryByText('At Risk')).toBeNull();
+    } finally {
+      log.mockRestore();
+    }
   });
 
-  test('shows loading indicators when data is being fetched', () => {
-    const { getByText, getAllByRole } = render(Dashboard, {
-      protectionStatus: {
-        enabled: true,
-        monitored_paths: [],
-        scanning_enabled: true,
-        last_updated: new Date().toISOString(),
-        version: '1.0.0'
-      }
-    });
-
-    // Check that loading spinners are visible
-    expect(getAllByRole('status').length).toBeGreaterThan(0);
+  test('opens the help route and finds the system requirements', async () => {
+    const { unmount } = render(App);
+    try {
+      const help = screen.getByRole('link', { name: 'Help' });
+      await fireEvent.click(help);
+      await screen.findByRole('heading', { name: 'Centro de Ayuda' });
+      const search = screen.getByRole('searchbox', { name: 'Buscar en la ayuda' });
+      await fireEvent.input(search, { target: { value: 'Requisitos' } });
+      const article = await screen.findByRole('link', { name: /Requisitos del sistema/ });
+      expect(article.getAttribute('href')).toContain('/docs/user-guides/getting-started.md');
+    } finally {
+      unmount();
+      window.history.replaceState(null, '', window.location.pathname);
+    }
   });
-}); 
+
+  test('starts a quick scan', async () => {
+    render(Dashboard, { protectionStatus });
+    await fireEvent.click(screen.getByRole('button', { name: 'Run Quick Scan' }));
+    expect(invoke).toHaveBeenCalledWith('start_quick_scan');
+    expect(screen.getByRole('button', { name: 'Scanning...' })).toBeDisabled();
+  });
+
+  test('toggles the selected protection feature', async () => {
+    render(Dashboard, { protectionStatus });
+    const toggle = screen.getByRole('checkbox', { name: 'Real-time Protection' });
+    await fireEvent.click(toggle);
+    expect(invoke).toHaveBeenCalledWith('toggle_protection_feature', {
+      featureId: 'realtime', enable: false
+    });
+    expect(toggle).not.toBeChecked();
+  });
+
+  test('displays loading status until the threat list arrives', async () => {
+    render(Dashboard, { protectionStatus });
+    expect(screen.getByRole('status', { name: 'Loading recent threats' })).toBeInTheDocument();
+    await screen.findByText('Test.Malware.001');
+    expect(screen.queryByRole('status', { name: 'Loading recent threats' })).toBeNull();
+  });
+});

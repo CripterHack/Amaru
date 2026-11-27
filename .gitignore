@@ -1,0 +1,6 @@
+# Local build and test output
+target/
+__pycache__/
+*.pyc
+.env
+/quarantine/

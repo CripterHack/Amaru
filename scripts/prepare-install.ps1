@@ -7,17 +7,13 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
 
 # Definir las rutas
-$ProjectRoot = (Get-Location).Path
-$BuildDir = "$ProjectRoot\target\release"
+$ErrorActionPreference = 'Stop'
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
 $DistDir = "$ProjectRoot\dist"
-$InstallerDir = "$ProjectRoot\installer"
-$ModulesDir = "$ProjectRoot\modules"
 
 # Crear directorios necesarios
 $Dirs = @(
-    "$BuildDir",
     "$DistDir",
-    "$InstallerDir",
     "$DistDir\x64",
     "$DistDir\x86"
 )
@@ -26,21 +22,6 @@ foreach ($Dir in $Dirs) {
     if (-not (Test-Path $Dir)) {
         New-Item -ItemType Directory -Path $Dir -Force | Out-Null
         Write-Host "Creado directorio: $Dir" -ForegroundColor Green
-    }
-}
-
-# Verificar que el ejecutable principal existe
-if (-not (Test-Path "$BuildDir\amaru.exe")) {
-    Write-Warning "No se encuentra el ejecutable principal en $BuildDir\amaru.exe"
-    $BuildExe = Read-Host "¿Desea ejecutar 'cargo build --release' para compilar el proyecto? (S/N)"
-    if ($BuildExe -eq "S" -or $BuildExe -eq "s") {
-        Write-Host "Compilando proyecto..." -ForegroundColor Yellow
-        Push-Location $ProjectRoot
-        cargo build --release
-        Pop-Location
-    } else {
-        Write-Error "El ejecutable principal es necesario para continuar. Abortando."
-        exit 1
     }
 }
 
@@ -98,95 +79,9 @@ foreach ($Module in $YaraDeps.Keys) {
     }
 }
 
-# Copiar el ejecutable principal al directorio del instalador
-Copy-Item -Path "$BuildDir\amaru.exe" -Destination "$InstallerDir\amaru.exe" -Force
-Write-Host "Copiado ejecutable principal a $InstallerDir\amaru.exe" -ForegroundColor Green
-
-# Copiar iconos y recursos
-$IconSources = @(
-    "$ProjectRoot\amaru-app.ico",
-    "$ProjectRoot\amaru-app.png",
-    "$ProjectRoot\amaru-isotipo-white.ico",
-    "$ProjectRoot\assets\icons\amaru-app.ico"
-)
-
-$IconFound = $false
-foreach ($IconSource in $IconSources) {
-    if (Test-Path $IconSource) {
-        Copy-Item -Path $IconSource -Destination "$InstallerDir\amaru-app.ico" -Force
-        Write-Host "Copiado icono desde $IconSource" -ForegroundColor Green
-        $IconFound = $true
-        break
-    }
-}
-
-if (-not $IconFound) {
-    Write-Warning "No se encontró un icono para la aplicación"
-}
-
-# Copiar configuración de ejemplo al instalador
-if (Test-Path "$ProjectRoot\config.toml") {
-    Copy-Item -Path "$ProjectRoot\config.toml" -Destination "$InstallerDir\config.toml" -Force
-    Write-Host "Copiada configuración de ejemplo" -ForegroundColor Green
-}
-
-# Copiar reglas YARA al instalador
-$YaraRulesDir = "$ProjectRoot\signatures"
-if (Test-Path $YaraRulesDir) {
-    if (-not (Test-Path "$InstallerDir\signatures")) {
-        New-Item -ItemType Directory -Path "$InstallerDir\signatures" -Force | Out-Null
-    }
-    
-    # Copiar reglas YARA
-    Get-ChildItem -Path "$YaraRulesDir\*.yar" -Recurse | ForEach-Object {
-        Copy-Item -Path $_.FullName -Destination "$InstallerDir\signatures\$($_.Name)" -Force
-        Write-Host "Copiada regla YARA: $($_.Name)" -ForegroundColor Green
-    }
-}
-
-# Copiar licencia
-$LicenseFile = "$ProjectRoot\LICENSE"
-if (Test-Path $LicenseFile) {
-    Copy-Item -Path $LicenseFile -Destination "$InstallerDir\license.txt" -Force
-    Write-Host "Copiada licencia" -ForegroundColor Green
-}
-
-# Verificar que NSIS está instalado
-$NsisPath = "C:\Program Files (x86)\NSIS\makensis.exe"
-if (-not (Test-Path $NsisPath)) {
-    $NsisPath = "C:\Program Files\NSIS\makensis.exe"
-    if (-not (Test-Path $NsisPath)) {
-        Write-Warning "No se encuentra NSIS instalado. Es necesario para compilar el instalador."
-        $InstallNsis = Read-Host "¿Desea abrir el navegador para descargar NSIS? (S/N)"
-        if ($InstallNsis -eq "S" -or $InstallNsis -eq "s") {
-            Start-Process "https://nsis.sourceforge.io/Download"
-        }
-    }
-}
-
-# Compilar el instalador
 $CompileInstaller = Read-Host "¿Desea compilar el instalador ahora? (S/N)"
-if ($CompileInstaller -eq "S" -or $CompileInstaller -eq "s") {
-    Write-Host "Compilando instalador..." -ForegroundColor Yellow
-    
-    # Variables para NSIS
-    $NsisVars = @(
-        "/DOUTDIR=$InstallerDir",
-        "/DEXEDIR=$InstallerDir",
-        "/DLICENSEFILE=$InstallerDir\license.txt"
-    )
-    
-    # Ejecutar NSIS
-    if (Test-Path $NsisPath) {
-        & $NsisPath $NsisVars "$ProjectRoot\scripts\installer.nsi"
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "Instalador creado con éxito en $InstallerDir\AmaruAV-Setup.exe" -ForegroundColor Green
-        } else {
-            Write-Error "Error al compilar el instalador. Código de salida: $LASTEXITCODE"
-        }
-    } else {
-        Write-Error "No se puede compilar el instalador porque no se encuentra NSIS."
-    }
+if ($CompileInstaller -in @('s', 'y')) {
+    & (Join-Path $PSScriptRoot 'package.ps1')
 }
 
-Write-Host "Preparación completada." -ForegroundColor Green 
+Write-Host "Preparación completada." -ForegroundColor Green

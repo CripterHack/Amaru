@@ -1,7 +1,8 @@
-<script>
+<script lang="ts">
+  import type { ScanRecord } from '$lib/stores/statusStore';
   import { formatDate, formatDuration } from '$lib/utils';
   
-  export let history = [];
+  export let history: ScanRecord[] = [];
 </script>
 
 {#if history.length === 0}
@@ -15,13 +16,13 @@
       <div class="py-4 first:pt-0">
         <div class="flex justify-between items-start">
           <div>
-            <h4 class="font-medium text-gray-900">{scan.scanType === 'quick' ? 'Quick Scan' : 'Full Scan'}</h4>
-            <p class="text-sm text-gray-500">{formatDate(scan.completedAt)}</p>
+            <h4 class="font-medium text-gray-900">{scan.scan_type === 'quick' ? 'Quick Scan' : 'Full Scan'}</h4>
+            <p class="text-sm text-gray-500">{formatDate(scan.completed_at)}</p>
           </div>
           <div class="text-right">
             <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium 
-              {scan.threatsFound > 0 ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}">
-              {scan.threatsFound} {scan.threatsFound === 1 ? 'threat' : 'threats'}
+              {scan.threats_found > 0 ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}">
+              {scan.threats_found} {scan.threats_found === 1 ? 'threat' : 'threats'}
             </span>
             <p class="text-xs text-gray-500 mt-1">Duration: {formatDuration(scan.duration)}</p>
           </div>
@@ -29,22 +30,22 @@
         
         <div class="mt-2">
           <div class="flex justify-between text-xs">
-            <span>Files scanned: {scan.filesScanned.toLocaleString()}</span>
-            <span>Items in quarantine: {scan.itemsQuarantined}</span>
+            <span>Files scanned: {scan.files_scanned.toLocaleString()}</span>
+            <span>Items in quarantine: {scan.items_quarantined}</span>
           </div>
           
-          {#if scan.threatsFound > 0}
+          {#if scan.threats_found > 0}
             <div class="mt-3 bg-gray-50 rounded p-3">
               <h5 class="text-xs font-bold mb-1">Detected Threats:</h5>
               <ul class="text-xs space-y-1">
-                {#each scan.detectedThreats.slice(0, 3) as threat}
+                {#each scan.detected_threats.slice(0, 3) as threat}
                   <li class="flex justify-between">
                     <span class="truncate" title={threat.path}>{threat.path}</span>
-                    <span class="ml-2 font-medium text-red-700">{threat.type}</span>
+                    <span class="ml-2 font-medium text-red-700">{threat.name}</span>
                   </li>
                 {/each}
-                {#if scan.detectedThreats.length > 3}
-                  <li class="text-gray-500 italic">+ {scan.detectedThreats.length - 3} more</li>
+                {#if scan.detected_threats.length > 3}
+                  <li class="text-gray-500 italic">+ {scan.detected_threats.length - 3} more</li>
                 {/if}
               </ul>
             </div>

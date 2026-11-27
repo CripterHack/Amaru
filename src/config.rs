@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 use std::fs;
 use std::io;
-use winreg::{enums::*, RegKey};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     /// Ruta al directorio de reglas YARA
     pub yara_rules_path: PathBuf,
@@ -25,27 +25,27 @@ pub struct Config {
     pub monitored_paths: Vec<PathBuf>,
     
     /// Configuración de escaneo
-    #[serde(default)]
     pub scan_config: ScanConfig,
     
     /// Configuración de cuarentena
-    #[serde(default)]
     pub quarantine_config: QuarantineConfig,
     
     /// Configuración de actualizaciones
-    #[serde(default)]
     pub update_config: UpdateConfig,
     
     /// Configuración de la interfaz de usuario
-    #[serde(default)]
     pub ui_config: UiConfig,
     
     /// Configuración de rendimiento
-    #[serde(default)]
     pub performance_config: PerformanceConfig,
+
+    /// Tablas de otros componentes que deben conservarse al guardar el archivo compartido.
+    #[serde(flatten)]
+    pub component_settings: toml::Table,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ScanConfig {
     /// Máximo tamaño de archivo a escanear (en bytes)
     pub max_file_size: u64,
@@ -88,8 +88,11 @@ impl Default for ScanFrequency {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct QuarantineConfig {
+    /// Opt in to automatic quarantine after a high-confidence detection.
+    pub auto_quarantine: bool,
     /// Ruta al directorio de cuarentena
     pub quarantine_path: PathBuf,
     
@@ -100,7 +103,8 @@ pub struct QuarantineConfig {
     pub retention_days: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UpdateConfig {
     /// URL del servidor de actualizaciones
     pub update_url: String,
@@ -116,6 +120,7 @@ pub struct UpdateConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UiConfig {
     /// Tema de la interfaz
     pub theme: Theme,
@@ -159,6 +164,7 @@ impl Default for UiConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PerformanceConfig {
     /// Modo de bajo consumo de recursos
     pub low_resource_mode: bool,
@@ -203,6 +209,57 @@ impl Default for PerformanceConfig {
     }
 }
 
+impl Default for ScanConfig {
+    fn default() -> Self {
+        Self {
+            max_file_size: 100 * 1024 * 1024, // 100MB
+            scan_extensions: vec![
+                "exe".to_string(),
+                "dll".to_string(),
+                "sys".to_string(),
+                "scr".to_string(),
+                "bat".to_string(),
+                "cmd".to_string(),
+                "ps1".to_string(),
+                "vbs".to_string(),
+                "js".to_string(),
+            ],
+            exclude_paths: vec![
+                PathBuf::from("C:\\Windows\\WinSxS"),
+                PathBuf::from("C:\\Windows\\SystemResources"),
+            ],
+            max_threads: num_cpus::get().min(4),
+            scan_timeout: 30,
+            scheduled_scan: true,
+            scheduled_time: 2, // 2 AM
+            scheduled_day: Some(0), // Domingo
+            scan_frequency: ScanFrequency::Weekly,
+        }
+    }
+}
+
+impl Default for QuarantineConfig {
+    fn default() -> Self {
+        Self {
+            quarantine_path: PathBuf::from("quarantine"),
+            auto_quarantine: false,
+            max_size: 1024 * 1024 * 1024, // 1GB
+            retention_days: 30,
+        }
+    }
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            update_url: "https://updates.amaru.dev".to_string(),
+            update_interval: 3600, // 1 hora
+            auto_update: true,
+            public_key: None,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -216,48 +273,21 @@ impl Default for Config {
                 PathBuf::from("C:\\Program Files (x86)"),
                 PathBuf::from("C:\\Users"),
             ],
-            scan_config: ScanConfig {
-                max_file_size: 100 * 1024 * 1024, // 100MB
-                scan_extensions: vec![
-                    "exe".to_string(),
-                    "dll".to_string(),
-                    "sys".to_string(),
-                    "scr".to_string(),
-                    "bat".to_string(),
-                    "cmd".to_string(),
-                    "ps1".to_string(),
-                    "vbs".to_string(),
-                    "js".to_string(),
-                ],
-                exclude_paths: vec![
-                    PathBuf::from("C:\\Windows\\WinSxS"),
-                    PathBuf::from("C:\\Windows\\SystemResources"),
-                ],
-                max_threads: num_cpus::get().min(4),
-                scan_timeout: 30,
-                scheduled_scan: true,
-                scheduled_time: 2, // 2 AM
-                scheduled_day: Some(0), // Domingo
-                scan_frequency: ScanFrequency::Weekly,
-            },
-            quarantine_config: QuarantineConfig {
-                quarantine_path: PathBuf::from("quarantine"),
-                max_size: 1024 * 1024 * 1024, // 1GB
-                retention_days: 30,
-            },
-            update_config: UpdateConfig {
-                update_url: "https://updates.amaru.dev".to_string(),
-                update_interval: 3600, // 1 hora
-                auto_update: true,
-                public_key: None,
-            },
+            scan_config: ScanConfig::default(),
+            quarantine_config: QuarantineConfig::default(),
+            update_config: UpdateConfig::default(),
             ui_config: UiConfig::default(),
             performance_config: PerformanceConfig::default(),
+            component_settings: toml::Table::new(),
         }
     }
 }
 
 impl Config {
+    pub fn should_auto_quarantine(&self, risk: crate::RiskLevel) -> bool {
+        self.quarantine_config.auto_quarantine && risk >= crate::RiskLevel::High
+    }
+
     /// Cargar configuración desde archivo
     pub fn load<P: AsRef<std::path::Path>>(path: P) -> io::Result<Self> {
         let content = fs::read_to_string(path)?;
@@ -275,6 +305,16 @@ impl Config {
 
     /// Validar configuración
     pub fn validate(&self) -> io::Result<()> {
+        if !(1..=tokio::sync::Semaphore::MAX_PERMITS).contains(&self.scan_config.max_threads) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid scan concurrency"));
+        }
+        if self.scan_config.scan_timeout == 0 || self.scan_config.max_file_size == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Scan deadline and file size limit must be positive"));
+        }
+        if self.heuristic_threshold > 100 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Heuristic threshold must be between 0 and 100"));
+        }
+
         // Verificar que las rutas existen
         if !self.yara_rules_path.exists() {
             return Err(io::Error::new(
@@ -283,16 +323,8 @@ impl Config {
             ));
         }
 
-        // Verificar rutas monitoreadas
-        for path in &self.monitored_paths {
-            if !path.exists() {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Ruta monitoreada no encontrada: {}", path.display())
-                ));
-            }
-        }
-
+        // The monitor validates watched directories when monitoring starts.
+        // On-demand scanning only requires the selected file and rule catalog.
         // Verificar configuración de cuarentena
         if !self.quarantine_config.quarantine_path.exists() {
             fs::create_dir_all(&self.quarantine_config.quarantine_path)?;
@@ -302,12 +334,12 @@ impl Config {
     }
     
     /// Aplicar configuración al sistema
+    #[cfg(windows)]
     pub fn apply_system_settings(&self) -> io::Result<()> {
         // Configurar inicio automático
-        set_registry_autostart(self.autostart)?;
+        crate::service::set_autostart(self.autostart).map_err(service_io_error)?;
         
         // Configurar prioridad del proceso si está disponible
-        #[cfg(target_os = "windows")]
         {
             use winapi::um::processthreadsapi::{GetCurrentProcess, SetPriorityClass};
             use winapi::um::winbase::{
@@ -325,7 +357,9 @@ impl Config {
             
             unsafe {
                 let handle = GetCurrentProcess();
-                SetPriorityClass(handle, priority);
+                if SetPriorityClass(handle, priority) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
             }
         }
         
@@ -333,39 +367,25 @@ impl Config {
     }
 }
 
-/// Configurar inicio automático en el registro de Windows
-pub fn set_registry_autostart(enable: bool) -> io::Result<()> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let path = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    let (key, _) = hkcu.create_subkey(path)?;
-    
-    let exe_path = std::env::current_exe()?;
-    let exe_path_str = exe_path.to_string_lossy().to_string();
-    
-    if enable {
-        key.set_value("AmaruAntivirus", &exe_path_str)?;
-    } else {
-        // Si existe la clave, eliminarla
-        if key.get_value::<String, _>("AmaruAntivirus").is_ok() {
-            key.delete_value("AmaruAntivirus")?;
-        }
+#[cfg(windows)]
+fn service_io_error(error: windows_service::Error) -> io::Error {
+    match error {
+        windows_service::Error::Winapi(error) => error,
+        other => io::Error::other(other),
     }
-    
-    Ok(())
 }
 
-/// Verificar si el inicio automático está habilitado
+/// Compatibilidad con clientes anteriores. El inicio automático se configura en el SCM.
+#[cfg(windows)]
+#[deprecated(note = "Use service::set_autostart for the installed Windows service")]
+pub fn set_registry_autostart(enable: bool) -> io::Result<()> {
+    crate::service::set_autostart(enable).map_err(service_io_error)
+}
+
+/// Consulta el tipo de inicio del servicio instalado en el SCM.
+#[cfg(windows)]
 pub fn is_autostart_enabled() -> io::Result<bool> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let path = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    
-    if let Ok(key) = hkcu.open_subkey(path) {
-        if let Ok(_) = key.get_value::<String, _>("AmaruAntivirus") {
-            return Ok(true);
-        }
-    }
-    
-    Ok(false)
+    crate::service::is_autostart_enabled().map_err(service_io_error)
 }
 
 #[cfg(test)]
@@ -379,6 +399,43 @@ mod tests {
         assert!(config.realtime_protection);
         assert!(!config.monitored_paths.is_empty());
         assert!(config.scan_config.max_threads > 0);
+    }
+
+    #[test]
+    fn automatic_quarantine_requires_opt_in_and_high_risk() {
+        use crate::RiskLevel::*;
+        let mut config = Config::default();
+        for risk in [Low, Medium, High, Critical] {
+            assert!(!config.should_auto_quarantine(risk));
+        }
+        config.quarantine_config.auto_quarantine = true;
+        assert!(!config.should_auto_quarantine(Medium));
+        assert!(config.should_auto_quarantine(High));
+        assert!(config.should_auto_quarantine(Critical));
+    }
+
+    #[test]
+    fn partial_tables_use_application_defaults() {
+        let config: Config = toml::from_str("[scan_config]\nmax_threads = 7\n[quarantine_config]\nretention_days = 14").unwrap();
+        let defaults = Config::default();
+        assert_eq!(config.scan_config.max_threads, 7);
+        assert_eq!(config.quarantine_config.retention_days, 14);
+        assert_eq!(config.scan_config.max_file_size, defaults.scan_config.max_file_size);
+        assert_eq!(config.quarantine_config.max_size, defaults.quarantine_config.max_size);
+        assert_eq!(config.update_config.update_interval, defaults.update_config.update_interval);
+        assert!(toml::from_str::<Config>("[scan_config]\nmax_threads = 'wrong type'").is_err());
+    }
+
+    #[test]
+    fn shipped_config_loads_and_preserves_component_settings() {
+        let shipped: toml::Table = toml::from_str(include_str!("../config.toml")).unwrap();
+        let config: Config = toml::from_str(include_str!("../config.toml")).unwrap();
+        let saved: toml::Table = toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        for key in ["behavior_analyzer", "performance"] {
+            assert_eq!(saved[key], shipped[key]);
+        }
+        assert_eq!(config.yara_rules_path, PathBuf::from("signatures"));
+        assert!(config.scan_config.max_file_size > 0);
     }
 
     #[test]
@@ -406,7 +463,9 @@ mod tests {
         config.yara_rules_path = rules_path;
         config.monitored_paths = vec![dir.path().to_path_buf()];
         
-        assert!(config.validate().is_ok());
+        config.quarantine_config.quarantine_path = dir.path().join("quarantine");
+        config.validate()?;
+        assert!(config.quarantine_config.quarantine_path.is_dir());
         
         Ok(())
     }

@@ -8,6 +8,9 @@ export default {
         sans: ['Inter var', 'sans-serif'],
       },
       colors: {
+        border: 'hsl(var(--border))',
+        background: 'hsl(var(--background))',
+        foreground: 'hsl(var(--foreground))',
         brand: {
           50: '#eef2ff',
           100: '#e0e7ff',

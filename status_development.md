@@ -1,4 +1,35 @@
-# Amaru Development Status Report
+# Amaru development status
+
+## Integration status on 2026-11-27
+
+Amaru targets Windows 11 x64 and remains experimental. The integration work builds on `850ec7e` and is tracked in [PR #4](https://github.com/CripterHack/Amaru/pull/4). Check the run for the revision you are installing. [Windows application workflow](.github/workflows/windows-build.yml) · [Component validation](.github/workflows/validation.yml)
+
+| Area | Implemented and exercised | Outstanding acceptance |
+|---|---|---|
+| Detection rules | Both classic YARA and the standalone YARA-X scanner compile the shipped catalog and pass the selected 651 EICAR variants and three negative controls. | Detection rates on representative samples, archive extraction and independent false-positive measurements. |
+| Core and CLI | On-demand scans, memory and file YARA, the EICAR self-test, heuristic PE import analysis, optional Radare2 and error propagation have native tests. Fresh scans verify content before using cached results. | Representative performance measurements on Windows 11 hardware. |
+| Monitor and quarantine | The service tracks actual watcher state. A matching digest and an explicit high-risk automatic policy are required to isolate a file. Restoration validates the payload and refuses to overwrite an occupied original path. | Endurance, crash recovery and permission coverage across supported Windows 11 configurations. |
+| Desktop | Tauri connects the dashboard, manual scans, cancellation, history and quarantine actions to native results. The Svelte 5 frontend passed its component tests and a production dependency audit reported zero vulnerabilities. Quick scan folders persist per account. Windows Task Scheduler runs scheduled scans as the signed-in user. | Interactive acceptance and accessibility testing on supported Windows 11 editions. |
+| Rules updater | Ed25519 verification and compilation of the staged catalog precede activation. A regression covers a correctly signed package containing invalid rules and preserves the installed catalog. | An operational update endpoint with a published trust key. |
+| Distribution | The Windows workflow builds the core, desktop and NSIS package from a single checkout. It tests the installed software and upgrade before publishing its development artifact. | A signed release, release provenance and an installation record on Windows 11. |
+| Documentation | Local Markdown links and heading anchors are checked in CI. The technical references distinguish implemented interfaces from proposed interfaces. | Keep release evidence with each version and record external service availability separately. |
+
+### Detection and response contract
+
+A successful per-file result carries its SHA-256 digest, risk and supporting evidence. The analyzer's lowest risk label is `Low`. A successful scan with no findings is clean for that scan. Read errors, size skips and cancellations have distinct outcomes. A desktop session aggregates file counts and findings, saves its own identifier and timestamps, and records the action taken. Quarantine is confirmed only after successful isolation.
+
+In the experimental configuration, automatic quarantine is opt-in. When `[quarantine_config] auto_quarantine = true`, monitored files rated `High` or `Critical` are eligible. The digest must still match the bytes analyzed. Manual desktop scans report their findings. The desktop stores history and manually quarantined files under the current user account. Administrative controls access the service's separate quarantine through its Windows pipe. Restoration recovers file content. Original ACLs and filesystem attributes are outside the current archive format.
+
+### Reproducing the results
+
+The [EICAR corpus specification](docs/technical/eicar-corpus.md) and [YARA-X specification](docs/technical/yara-x.md) record the feedback in issues #3 and #2, the input scope and expected results. The bundled marker rules alone do not establish family-specific identification. The [Radare2 component guide](radare2-analyzer/README.md) describes the analyzer and its inputs. The [installer guide](installer/README.md) describes the package build, smoke test and retained data.
+
+Windows CI uses Windows Server 2022 x64. For a production release, record the Windows 11 edition and build, installed revision, installer signature and checksum, service state, detection and quarantine round-trip, and upgrade/uninstall outcomes. There was no published GitHub release at the time of this review.
+
+## Historical assessment from April 2025
+
+The following section preserves the original design, module assessments and roadmap. Its completion labels reflect the assessment recorded in 2025. Use the dated validation record above for current test evidence.
+
 
 ## Project Overview
 Amaru is a next-generation open-source antivirus for Windows 11 built with Rust, featuring real-time protection, YARA-based heuristic analysis, and Radare2 integration. The project aims to provide a modern, low-resource alternative to commercial antivirus solutions with transparency and customization as core values.

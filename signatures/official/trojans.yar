@@ -92,8 +92,6 @@ rule Trojan_Trickbot {
         $cfg3 = "<gtag>" wide ascii
         $cfg4 = "<mcconf>" wide ascii
         
-        $pdb = ".pdb" wide ascii
-        
     condition:
         uint16(0) == 0x5A4D and
         filesize < 10MB and

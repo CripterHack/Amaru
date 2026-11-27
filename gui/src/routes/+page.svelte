@@ -1,9 +1,14 @@
-{#key $antivirusStore}
 <script lang="ts">
   import { antivirusStore } from '$lib/stores/antivirus';
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
-  import Dashboard from '$components/Dashboard.svelte';
+  import ScanView from './Scan.svelte';
+  import ScanConfigView from './ScanConfig.svelte';
+  import ProtectionView from '$components/widgets/SystemStatus.svelte';
+  import QuarantineView from './Quarantine.svelte';
+  import SettingsView from './Settings.svelte';
+  import { manageListeners } from '$lib/tauriEvents';
+  import type { ProtectionStatus, ThreatEntry, ScanRecord, ThreatStatistics } from '$lib/stores/statusStore';
   import Sidebar from '$components/Sidebar.svelte';
   import Header from '$components/Header.svelte';
   import NotificationCenter from '$components/NotificationCenter.svelte';
@@ -19,62 +24,59 @@
   import ActionButton from '$lib/components/ActionButton.svelte';
 
   let currentView = 'dashboard';
-  let systemStatus = 'Protected';
+  let systemStatus = 'Protection status unavailable';
   let loading = true;
   let scanInProgress = false;
   let scanProgress = 0;
   let scanTarget = '';
-  let lastScanDate = null;
+  let lastScanDate: Date | null = null;
 
-  onMount(async () => {
-    // Suscribirse a eventos del backend
-    const unsubscribe = await listen<Notification>('notification', (event) => {
-      antivirusStore.addNotification(event.payload);
-    });
+  onMount(() => {
+    const stopEvents = manageListeners([
+      listen<Notification>('notification', event => antivirusStore.addNotification(event.payload)),
+      listen<ThreatEntry>('threat-detected', ({ payload }) => {
+        threatStats.update(current => ({
+          ...current,
+          recent_threats: [payload, ...current.recent_threats].slice(0, 5)
+        }));
+      }),
+      listen<{ progress: number; currentFile: string }>('scan-progress', ({ payload }) => {
+        scanInProgress = true;
+        scanProgress = payload.progress;
+        scanTarget = payload.currentFile;
+      }),
+      listen<ScanRecord>('scan-completed', ({ payload }) => {
+        scanInProgress = false;
+        scanProgress = 0;
+        lastScanDate = new Date(payload.completed_at);
+        scanHistory.update(history => [payload, ...history].slice(0, 10));
+      }),
+      listen<{ enabled: boolean; monitoredPaths: string[] }>('protection-status-changed', ({ payload }) => {
+        protectionStatus.update(status => ({
+          ...status, enabled: payload.enabled, monitored_paths: payload.monitoredPaths
+        }));
+        systemStatus = payload.enabled ? 'Protected' : 'At Risk';
+      })
+    ]);
+    void loadStatus();
+    return stopEvents;
+  });
 
-    // Listen for events from the backend
-    await listen('threat-detected', (event) => {
-      threatStats.update(current => {
-        return {...current, recentThreats: [event.payload, ...current.recentThreats].slice(0, 5)};
-      });
-    });
-    
-    await listen('scan-progress', (event) => {
-      scanInProgress = true;
-      scanProgress = event.payload.progress;
-      scanTarget = event.payload.currentFile;
-    });
-    
-    await listen('scan-completed', (event) => {
-      scanInProgress = false;
-      scanProgress = 0;
-      lastScanDate = new Date();
-      
-      // Add to scan history
-      scanHistory.update(history => {
-        return [event.payload, ...history].slice(0, 10);
-      });
-    });
-    
-    await listen('protection-status-changed', (event) => {
-      protectionStatus.set(event.payload);
-      systemStatus = event.payload.enabled ? 'Protected' : 'At Risk';
-    });
-    
+  async function loadStatus() {
     // Get initial status
     try {
-      const status = await invoke('get_protection_status');
+      const status = await invoke<ProtectionStatus>('get_protection_status');
       protectionStatus.set(status);
       systemStatus = status.enabled ? 'Protected' : 'At Risk';
       
-      const history = await invoke('get_scan_history');
+      const history = await invoke<ScanRecord[]>('get_scan_history');
       scanHistory.set(history);
       
-      const stats = await invoke('get_threat_statistics');
+      const stats = await invoke<ThreatStatistics>('get_threat_statistics');
       threatStats.set(stats);
       
       if (history.length > 0) {
-        lastScanDate = new Date(history[0].completedAt);
+        lastScanDate = new Date(history[0].completed_at);
       }
     } catch (error) {
       console.error('Failed to get initial status:', error);
@@ -82,10 +84,7 @@
       loading = false;
     }
 
-    return () => {
-      unsubscribe();
-    };
-  });
+  }
 
   async function startQuickScan() {
     try {
@@ -118,10 +117,10 @@
 </script>
 
 <div class="min-h-screen bg-gray-100 dark:bg-gray-900">
-  <Header />
+  <Header route={currentView} protectionStatus={$protectionStatus} />
   
   <div class="flex">
-    <Sidebar bind:currentView />
+    <Sidebar route={currentView} navigate={view => currentView = view} protectionStatus={$protectionStatus} on:toggleProtection={toggleProtection} />
     
     <main class="flex-1 p-6">
       {#if currentView === 'dashboard'}
@@ -220,14 +219,14 @@
               <div class="bg-white rounded-lg shadow-md p-6">
                 <h2 class="text-xl font-semibold mb-4">Recent Threats</h2>
                 
-                {#if $threatStats.recentThreats.length === 0}
+                {#if $threatStats.recent_threats.length === 0}
                   <div class="text-center py-8 text-gray-500">
                     <p>No threats detected</p>
                     <p class="text-sm mt-2">Your system is clean!</p>
                   </div>
                 {:else}
                   <div class="space-y-4">
-                    {#each $threatStats.recentThreats as threat}
+                    {#each $threatStats.recent_threats as threat}
                       <ThreatCard {threat} />
                     {/each}
                   </div>
@@ -238,11 +237,11 @@
                   <div class="grid grid-cols-2 gap-4">
                     <div>
                       <p class="text-sm text-gray-500">Total Detected</p>
-                      <p class="text-xl font-bold">{$threatStats.totalDetected}</p>
+                      <p class="text-xl font-bold">{$threatStats.total_detected}</p>
                     </div>
                     <div>
                       <p class="text-sm text-gray-500">In Quarantine</p>
-                      <p class="text-xl font-bold">{$threatStats.inQuarantine}</p>
+                      <p class="text-xl font-bold">{$threatStats.in_quarantine}</p>
                     </div>
                   </div>
                 </div>
@@ -252,6 +251,8 @@
         </div>
       {:else if currentView === 'scan'}
         <ScanView />
+      {:else if currentView === 'scan-config'}
+        <ScanConfigView />
       {:else if currentView === 'protection'}
         <ProtectionView />
       {:else if currentView === 'quarantine'}
@@ -274,4 +275,3 @@
     @apply bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100;
   }
 </style>
-{/key} 

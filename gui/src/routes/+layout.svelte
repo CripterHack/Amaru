@@ -1,58 +1,36 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import { antivirusStore } from '$lib/stores/antivirus';
   import { configStore } from '$lib/stores/config';
   import ModernHeader from '$lib/components/ModernHeader.svelte';
   import NotificationManager from '$lib/components/notifications/NotificationManager.svelte';
   import { invoke } from '@tauri-apps/api/tauri';
+  import { manageListeners } from '$lib/tauriEvents';
   import { listen } from '@tauri-apps/api/event';
   import type { Notification } from '$lib/types';
   
   let darkMode = false;
   
   // Inicializar configuración y suscribirse a cambios
-  onMount(async () => {
-    // Cargar configuración inicial
-    try {
-      await configStore.init();
-      
-      // Suscribirse a eventos de notificación desde el backend
-      const unsubscribe = await listen<Notification>('notification', (event) => {
-        antivirusStore.addNotification(event.payload);
-      });
-      
-      // Suscribirse a cambios de tema
-      const themeUnsubscribe = configStore.subscribe(config => {
-        if (config) {
-          // Aplicar tema
-          darkMode = config.ui.theme === 'dark' || 
-                    (config.ui.theme === 'system' && 
-                     window.matchMedia('(prefers-color-scheme: dark)').matches);
-          
-          if (darkMode) {
-            document.documentElement.classList.add('dark');
-          } else {
-            document.documentElement.classList.remove('dark');
-          }
-        }
-      });
-      
-      // Verificar estado del sistema
-      await checkSystemStatus();
-      
-      // Programar verificaciones periódicas
-      const intervalId = setInterval(checkSystemStatus, 30000);
-      
-      return () => {
-        unsubscribe();
-        themeUnsubscribe();
-        clearInterval(intervalId);
-      };
-    } catch (error) {
-      console.error('Error al inicializar la aplicación:', error);
-    }
+  onMount(() => {
+    void configStore.init();
+    const stopEvents = manageListeners([
+      listen<Notification>('notification', event => antivirusStore.addNotification(event.payload))
+    ]);
+    const stopTheme = configStore.subscribe(({ ui }) => {
+      darkMode = ui.theme === 'dark' ||
+        (ui.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.classList.toggle('dark', darkMode);
+    });
+    void checkSystemStatus();
+    const intervalId = setInterval(checkSystemStatus, 30000);
+    return () => {
+      stopEvents();
+      stopTheme();
+      clearInterval(intervalId);
+    };
   });
-  
+
   // Comprobar estado del sistema (protección, actualizaciones, etc.)
   async function checkSystemStatus() {
     try {
@@ -77,7 +55,7 @@
   <NotificationManager maxToasts={3} position="top-right" />
 </div>
 
-<style>
+<style lang="postcss">
   :global(html) {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
     @apply antialiased;

@@ -1,16 +1,16 @@
 // Módulo para análisis heurístico de archivos
 // Este componente implementa detección avanzada basada en patrones de comportamiento
 
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
+use object::Object;
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::Read;
 use thiserror::Error;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
-use dashmap::DashMap;
-use std::sync::{Arc, Mutex};
-use rayon::prelude::*;
+
 use std::time::Instant;
 
 /// Errores específicos del análisis heurístico
@@ -108,28 +108,17 @@ struct HeuristicPattern {
 #[derive(Debug, Clone)]
 enum PatternType {
     ByteSequence(Vec<u8>),
-    Regex(regex::Regex),
+    Regex(regex::bytes::Regex),
     EntropyCheck { min: f64, max: f64 },
-    PeHeader(PeHeaderCheck),
+    ImportedFunction(String),
     ApiUsage(Vec<String>),
 }
 
-/// Verificaciones específicas para encabezados PE
-#[derive(Debug, Clone)]
-enum PeHeaderCheck {
-    SectionName(String),
-    ImportedDll(String),
-    ImportedFunction(String),
-    ExportedFunction(String),
-    ResourceType(u32),
-    Characteristic(u32),
-}
-
 /// Implementación del motor de análisis heurístico
+#[derive(Clone)]
 pub struct HeuristicEngine {
     config: HeuristicConfig,
     patterns: Vec<HeuristicPattern>,
-    cache: Arc<DashMap<String, HeuristicResult>>,
 }
 
 impl HeuristicEngine {
@@ -140,14 +129,12 @@ impl HeuristicEngine {
         Self {
             config,
             patterns: default_patterns,
-            cache: Arc::new(DashMap::new()),
         }
     }
     
     /// Analizar un archivo usando métodos heurísticos
     pub fn analyze_file(&self, path: impl AsRef<Path>) -> Result<HeuristicResult, HeuristicError> {
         let path = path.as_ref();
-        let start = Instant::now();
         
         debug!("Iniciando análisis heurístico: {}", path.display());
         
@@ -160,20 +147,39 @@ impl HeuristicEngine {
         }
         
         // Leer contenido del archivo
-        let mut file = fs::File::open(path)?;
+        let file = fs::File::open(path)?;
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
+        file.take(self.config.max_file_size.saturating_add(1)).read_to_end(&mut buffer)?;
+        self.analyze_bytes(path, &buffer)
+    }
+
+    /// Analyze the same bounded snapshot as the signature scanner.
+    pub fn analyze_bytes(&self, path: &Path, buffer: &[u8]) -> Result<HeuristicResult, HeuristicError> {
+        if buffer.len() as u64 > self.config.max_file_size {
+            return Err(HeuristicError::FileTooLarge(path.display().to_string()));
+        }
+        let start = Instant::now();
         
         // Análisis básico de entropía
-        let entropy = Self::calculate_entropy(&buffer);
+        let entropy = Self::calculate_entropy(buffer);
         let mut score = 0;
         let mut matches = Vec::new();
         
+        // Imported names reference the PE import table, not arbitrary strings in the payload.
+        let imports = if buffer.starts_with(b"MZ") && (self.config.pe_analysis || self.config.behavioral_analysis) {
+            object::File::parse(buffer).ok()
+                .filter(|file| file.format() == object::BinaryFormat::Pe)
+                .and_then(|file| file.imports().ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         // Verificar patrones de bytes
         for pattern in &self.patterns {
             match &pattern.pattern_type {
                 PatternType::ByteSequence(bytes) => {
-                    let locations = Self::find_byte_pattern(&buffer, bytes);
+                    let locations = Self::find_byte_pattern(buffer, bytes);
                     if !locations.is_empty() {
                         score += pattern.weight;
                         matches.push(PatternMatch {
@@ -185,21 +191,15 @@ impl HeuristicEngine {
                     }
                 }
                 PatternType::Regex(re) => {
-                    // Convertir el buffer a texto para análisis de regex
-                    if let Ok(text) = String::from_utf8(buffer.clone()) {
-                        let locations: Vec<usize> = re.find_iter(&text)
-                            .map(|m| m.start())
-                            .collect();
-                            
-                        if !locations.is_empty() {
-                            score += pattern.weight;
-                            matches.push(PatternMatch {
-                                pattern_name: pattern.name.clone(),
-                                description: pattern.description.clone(),
-                                weight: pattern.weight,
-                                locations,
-                            });
-                        }
+                    let locations: Vec<_> = re.find_iter(buffer).map(|m| m.start()).collect();
+                    if !locations.is_empty() {
+                        score += pattern.weight;
+                        matches.push(PatternMatch {
+                            pattern_name: pattern.name.clone(),
+                            description: pattern.description.clone(),
+                            weight: pattern.weight,
+                            locations,
+                        });
                     }
                 }
                 PatternType::EntropyCheck { min, max } => {
@@ -213,27 +213,32 @@ impl HeuristicEngine {
                         });
                     }
                 }
-                PatternType::PeHeader(check) => {
-                    // Implementar análisis PE si está habilitado
-                    if self.config.pe_analysis {
-                        if let Some(locations) = self.check_pe_header(&buffer, check) {
-                            score += pattern.weight;
-                            matches.push(PatternMatch {
-                                pattern_name: pattern.name.clone(),
-                                description: pattern.description.clone(),
-                                weight: pattern.weight,
-                                locations,
-                            });
-                        }
+                PatternType::ImportedFunction(name) if self.config.pe_analysis => {
+                    if imports.iter().any(|entry| entry.name() == name.as_bytes()) {
+                        score += pattern.weight;
+                        matches.push(PatternMatch {
+                            pattern_name: pattern.name.clone(),
+                            description: format!("{}: {}", pattern.description, name),
+                            weight: pattern.weight,
+                            locations: Vec::new(),
+                        });
                     }
                 }
-                PatternType::ApiUsage(apis) => {
-                    // Análisis de uso de API (dependiente del OS)
-                    if self.config.behavioral_analysis {
-                        // Esta funcionalidad requeriría integración con un módulo de análisis dinámico
-                        // Por ahora es un stub para futura implementación
+                PatternType::ApiUsage(apis) if self.config.behavioral_analysis => {
+                    let observed: Vec<_> = apis.iter().filter(|api| {
+                        imports.iter().any(|entry| entry.name() == api.as_bytes())
+                    }).map(String::as_str).collect();
+                    if !observed.is_empty() {
+                        score += pattern.weight;
+                        matches.push(PatternMatch {
+                            pattern_name: pattern.name.clone(),
+                            description: format!("{}: {}", pattern.description, observed.join(", ")),
+                            weight: pattern.weight,
+                            locations: Vec::new(),
+                        });
                     }
                 }
+                _ => {}
             }
         }
         
@@ -252,11 +257,7 @@ impl HeuristicEngine {
             patterns: matches,
             score,
         };
-        
-        // Almacenar en caché
-        let file_key = path.to_string_lossy().to_string();
-        self.cache.insert(file_key, result.clone());
-        
+
         Ok(result)
     }
     
@@ -266,7 +267,7 @@ impl HeuristicEngine {
             return 0.0;
         }
         
-        let mut counts = [0u32; 256];
+        let mut counts = [0usize; 256];
         for &byte in data {
             counts[byte as usize] += 1;
         }
@@ -298,13 +299,6 @@ impl HeuristicEngine {
         }
         
         positions
-    }
-    
-    /// Verificar encabezados PE
-    fn check_pe_header(&self, data: &[u8], check: &PeHeaderCheck) -> Option<Vec<usize>> {
-        // Implementación simplificada - en un caso real
-        // esto utilizaría una librería para parsear PE como goblin o pelite
-        None
     }
     
     /// Determinar el tipo de amenaza y nivel de confianza
@@ -368,7 +362,7 @@ impl HeuristicEngine {
             description: "Patrones de cifrado de archivos".to_string(),
         });
         
-        if let Ok(re) = regex::Regex::new(r"\.encrypted$|\.locked$|\.crypt$|DECRYPT|RANSOM") {
+        if let Ok(re) = regex::bytes::Regex::new(r"\.encrypted$|\.locked$|\.crypt$|DECRYPT|RANSOM") {
             patterns.push(HeuristicPattern {
                 name: "ransomware_extension".to_string(),
                 pattern_type: PatternType::Regex(re),
@@ -388,13 +382,13 @@ impl HeuristicEngine {
         // Patrones de rootkit
         patterns.push(HeuristicPattern {
             name: "rootkit_system_hook".to_string(),
-            pattern_type: PatternType::PeHeader(PeHeaderCheck::ImportedFunction("NtCreateFile".to_string())),
+            pattern_type: PatternType::ImportedFunction("NtCreateFile".to_string()),
             weight: 60,
             description: "Funciones usadas para interceptar operaciones del sistema".to_string(),
         });
         
         // Patrones de spyware
-        if let Ok(re) = regex::Regex::new(r"GetClipboardData|GetKeyboardState|GetAsyncKeyState") {
+        if let Ok(re) = regex::bytes::Regex::new(r"GetClipboardData|GetKeyboardState|GetAsyncKeyState") {
             patterns.push(HeuristicPattern {
                 name: "spyware_keyboard_monitoring".to_string(),
                 pattern_type: PatternType::Regex(re),
@@ -441,7 +435,7 @@ impl HeuristicEngine {
             .par_iter()
             .filter_map(|path| {
                 match self.analyze_file(path) {
-                    Ok(result) if result.score >= self.config.min_detection_score => Some(Ok(result)),
+                    Ok(result) if result.score >= self.config.min_detection_score => Some(result),
                     Ok(_) => None, // Ignorar resultados por debajo del umbral
                     Err(e) => {
                         warn!("Error en análisis heurístico de {}: {}", path.display(), e);
@@ -449,7 +443,7 @@ impl HeuristicEngine {
                     }
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect();
             
         let duration = start.elapsed().as_secs_f64();
         info!("Análisis heurístico recursivo completado en {:.2}s. Encontradas {} amenazas potenciales", 
@@ -485,7 +479,7 @@ mod tests {
         
         let positions = HeuristicEngine::find_byte_pattern(data, pattern);
         assert_eq!(positions.len(), 1, "Debería encontrar exactamente una coincidencia");
-        assert_eq!(positions[0], 15, "La coincidencia debería estar en la posición 15");
+        assert_eq!(positions[0], b"This is a test with ".len());
     }
     
     #[test]

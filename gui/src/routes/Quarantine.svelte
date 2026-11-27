@@ -1,10 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { ask } from '@tauri-apps/api/dialog';
   import { invoke } from '@tauri-apps/api/tauri';
   import { notify } from '../lib/components/Notifications.svelte';
   
   // Quarantine state
   let loading = true;
+  let acting = false;
+  let scope: 'desktop' | 'service' = 'desktop';
+  let request = 0;
   let error: string | null = null;
   let quarantineItems: QuarantineItem[] = [];
   let selectedItems: string[] = [];
@@ -17,7 +21,7 @@
     threatType: string;
     detectionDate: string;
     fileSize: number;
-    riskLevel: 'low' | 'medium' | 'high' | 'critical';
+
   };
   
   // Format file size
@@ -55,111 +59,39 @@
     }
   }
   
-  // Get CSS class for risk level
-  function getRiskLevelClass(level: string): string {
-    switch (level) {
-      case 'low': return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300';
-      case 'medium': return 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300';
-      case 'high': return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300';
-      case 'critical': return 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300';
-      default: return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300';
-    }
-  }
-  
-  // Restore selected items
-  async function restoreSelected() {
-    if (selectedItems.length === 0) return;
-    
+  async function applySelection(restore: boolean) {
+    if (acting || !selectedItems.length) return;
+    acting = true;
+    const selected = [...selectedItems];
+    const verb = restore ? 'Restore' : 'Permanently delete';
     try {
-      // In a real app, we would invoke the Tauri backend
-      // await invoke('restore_quarantined_items', { itemIds: selectedItems });
-      
-      // For demo, we'll simulate the restore
-      quarantineItems = quarantineItems.filter(item => !selectedItems.includes(item.id));
-      notify('Items Restored', `${selectedItems.length} item(s) have been restored`, 'success');
-      selectedItems = [];
+      if (!await ask(`${verb} ${selected.length} selected file(s) from ${scope} quarantine?`, { title: 'Confirm quarantine action', type: 'warning' })) return;
+      for (const id of selected) {
+        await invoke(restore ? 'restore_quarantined_file' : 'delete_quarantined_file', { id, scope });
+        selectedItems = selectedItems.filter(item => item !== id);
+      }
+      notify('Quarantine updated', `${selected.length} item(s) processed`, 'success');
     } catch (error) {
-      console.error('Failed to restore items:', error);
-      notify('Restore Failed', `Failed to restore items: ${error}`, 'error');
+      notify('Quarantine action failed', String(error), 'error');
+    } finally {
+      acting = false;
+      await loadQuarantineItems();
     }
   }
-  
-  // Delete selected items
-  async function deleteSelected() {
-    if (selectedItems.length === 0) return;
-    
-    try {
-      // In a real app, we would invoke the Tauri backend
-      // await invoke('delete_quarantined_items', { itemIds: selectedItems });
-      
-      // For demo, we'll simulate the deletion
-      quarantineItems = quarantineItems.filter(item => !selectedItems.includes(item.id));
-      notify('Items Deleted', `${selectedItems.length} item(s) have been permanently deleted`, 'success');
-      selectedItems = [];
-    } catch (error) {
-      console.error('Failed to delete items:', error);
-      notify('Delete Failed', `Failed to delete items: ${error}`, 'error');
-    }
-  }
-  
-  // Load quarantine items
+
   async function loadQuarantineItems() {
+    const revision = ++request;
+    loading = true;
     try {
-      loading = true;
-      
-      // In a real app, we would invoke the Tauri backend
-      // quarantineItems = await invoke('get_quarantined_items');
-      
-      // For demo, we'll use mock data
-      setTimeout(() => {
-        quarantineItems = [
-          {
-            id: '1',
-            fileName: 'malicious-script.js',
-            originalPath: 'C:\\Users\\User\\Downloads\\malicious-script.js',
-            threatType: 'Trojan.JS.Downloader',
-            detectionDate: '2023-05-15T14:30:00Z',
-            fileSize: 45678,
-            riskLevel: 'high'
-          },
-          {
-            id: '2',
-            fileName: 'fake-invoice.pdf.exe',
-            originalPath: 'C:\\Users\\User\\Downloads\\Invoice-May2023.pdf.exe',
-            threatType: 'Win32.Trojan.Ransomware',
-            detectionDate: '2023-05-10T09:15:22Z',
-            fileSize: 1456789,
-            riskLevel: 'critical'
-          },
-          {
-            id: '3',
-            fileName: 'suspicious-macro.docm',
-            originalPath: 'C:\\Users\\User\\Documents\\Report.docm',
-            threatType: 'Macro.Downloader.Generic',
-            detectionDate: '2023-05-08T11:45:30Z',
-            fileSize: 245678,
-            riskLevel: 'medium'
-          },
-          {
-            id: '4',
-            fileName: 'adware-bundle.exe',
-            originalPath: 'C:\\Users\\User\\Downloads\\free-software-bundle.exe',
-            threatType: 'Win32.Adware.BundleInstaller',
-            detectionDate: '2023-05-01T16:20:45Z',
-            fileSize: 3456789,
-            riskLevel: 'low'
-          }
-        ];
-        loading = false;
-      }, 1000);
-    } catch (err: unknown) {
-      console.error('Failed to load quarantine items:', err);
-      error = err instanceof Error ? err.message : String(err);
-      loading = false;
-    }
+      const items = await invoke<QuarantineItem[]>('get_quarantined_files', { scope });
+      if (revision !== request) return;
+      quarantineItems = items;
+      error = null;
+      selectedItems = selectedItems.filter(id => quarantineItems.some(item => item.id === id));
+    } catch (err) { if (revision === request) { error = String(err); selectedItems = []; } }
+    finally { if (revision === request) loading = false; }
   }
-  
-  // Initialize
+
   onMount(() => {
     loadQuarantineItems();
   });
@@ -173,22 +105,28 @@
       <div>
         <h2 class="text-xl font-semibold">Quarantined Items</h2>
         <p class="text-gray-500 dark:text-gray-400 text-sm mt-1">
-          Files detected as malicious are stored in quarantine for safety
+          Review and manage files isolated by the selected scanner.
         </p>
       </div>
       
       <div class="flex gap-2">
+        <label>Quarantine source
+          <select bind:value={scope} disabled={acting} on:change={() => { selectedItems = []; void loadQuarantineItems(); }}>
+            <option value="desktop">Desktop</option>
+            <option value="service">Windows service (administrator)</option>
+          </select>
+        </label>
         <button 
-          on:click={restoreSelected}
-          disabled={selectedItems.length === 0}
+          on:click={() => applySelection(true)}
+          disabled={acting || selectedItems.length === 0}
           class="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Restore Selected
         </button>
         
         <button 
-          on:click={deleteSelected}
-          disabled={selectedItems.length === 0}
+          on:click={() => applySelection(false)}
+          disabled={acting || selectedItems.length === 0}
           class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Delete Selected
@@ -211,7 +149,7 @@
         </svg>
         <h3 class="text-lg font-medium mt-4">No Quarantined Items</h3>
         <p class="text-gray-500 dark:text-gray-400 mt-2">
-          Your system is clean. All detected threats have been resolved.
+          The selected quarantine contains no files.
         </p>
       </div>
     {:else}
@@ -233,7 +171,6 @@
               <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Threat Type</th>
               <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Detection Date</th>
               <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Size</th>
-              <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Risk Level</th>
               <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Actions</th>
             </tr>
           </thead>
@@ -261,16 +198,12 @@
                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                   {formatFileSize(item.fileSize)}
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full {getRiskLevelClass(item.riskLevel)}">
-                    {item.riskLevel.charAt(0).toUpperCase() + item.riskLevel.slice(1)}
-                  </span>
-                </td>
+
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 space-x-2">
                   <button 
                     on:click={() => {
                       selectedItems = [item.id];
-                      restoreSelected();
+                      void applySelection(true);
                     }}
                     class="text-blue-600 hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-300"
                   >
@@ -279,7 +212,7 @@
                   <button 
                     on:click={() => {
                       selectedItems = [item.id];
-                      deleteSelected();
+                      void applySelection(false);
                     }}
                     class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
                   >
@@ -303,8 +236,6 @@
       <li><strong>Restore</strong> - Return the file to its original location (only if you're confident it's safe)</li>
       <li><strong>Delete</strong> - Permanently remove the file from your system</li>
     </ul>
-    <div class="mt-4 p-4 bg-blue-50 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded-md">
-      <p class="text-sm"><strong>Note:</strong> Quarantined items are automatically deleted after 30 days to free up space.</p>
-    </div>
+
   </div>
 </div> 
