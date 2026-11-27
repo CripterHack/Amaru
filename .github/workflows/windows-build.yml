@@ -43,12 +43,13 @@ jobs:
         run: cargo test --locked --package amaru --lib --bins --tests
       - name: Inspect Windows test process startup on failure
         if: steps.native_tests.outcome == 'failure'
+        continue-on-error: true
         shell: pwsh
         run: |
           Get-WinEvent -FilterHashtable @{LogName='Application';StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue |
             Where-Object { $_.ProviderName -in @('Application Error','SideBySide','Windows Error Reporting') } |
             Select-Object -First 12 TimeCreated,Id,Message | Format-List
-          exit 0
+          cargo test --locked --no-default-features --package amaru --lib -- --list
       - name: Build the desktop application and installer
         run: ./scripts/package.ps1
       - name: Exercise the installed application, upgrade and uninstall

@@ -29,7 +29,7 @@ crossbeam-channel = "0.5.8"
 num_cpus = "1.16.0"
 
 # Optimización de recursos
-mimalloc = { version = "0.1.52", default-features = false }
+mimalloc = { version = "0.1.52", optional = true, default-features = false }
 sysinfo = "0.29.10"
 futures = "0.3.28"
 parking_lot = "0.12.1"
@@ -50,11 +50,12 @@ rand = "0.8.5"
 csv = "1.3.0"
 toml = "0.8"
 clap = { version = "4.5", features = ["derive"] }
-libmimalloc-sys = { version = "0.1.49", features = ["extended", "arena"] }
+libmimalloc-sys = { version = "0.1.49", optional = true, features = ["extended", "arena"] }
 
 # IPC y comunicación
 object = { version = "0.36", default-features = false, features = ["read", "pe", "std"] }
 tempfile = "3.8"
+same-file = "1.0"
 walkdir = "2.4"
 hex = "0.4"
 dirs = "5"
@@ -70,7 +71,7 @@ winapi = { version = "0.3.9", features = ["wintrust", "wincrypt", "softpub", "gu
 
 [features]
 default = ["optimize_memory", "profile_allocation"]
-optimize_memory = ["mimalloc/secure"]
+optimize_memory = ["dep:mimalloc", "dep:libmimalloc-sys", "mimalloc/secure"]
 profile_allocation = []
 low_power = []
 

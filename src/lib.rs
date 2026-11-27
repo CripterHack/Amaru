@@ -45,6 +45,7 @@ pub use security::{
 };
 
 // Usar el allocator optimizado
+#[cfg(feature = "optimize_memory")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

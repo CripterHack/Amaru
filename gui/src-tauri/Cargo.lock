@@ -94,6 +94,7 @@ dependencies = [
  "rand 0.8.8",
  "rayon",
  "realtime-monitor",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",

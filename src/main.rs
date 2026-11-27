@@ -263,20 +263,18 @@ fn optimize_for_system() -> Result<(), rayon::ThreadPoolBuildError> {
         }
     }
 
-    // Configurar reserva de memoria para caché si hay suficiente RAM disponible
-    let total_memory = system.total_memory() / 1024 / 1024; // En MB
-    let reserve_bytes = if total_memory > 4096 { 256 } else { 64 } * 1024 * 1024;
-    let mut arena = 0;
-    // A nonexclusive arena supplies allocations to the application's global mimalloc allocator.
-    let status = unsafe {
-        libmimalloc_sys::mi_reserve_os_memory_ex(reserve_bytes, false, false, false, &mut arena)
-    };
-    if status != 0 {
-        log::warn!(
-            "mimalloc could not reserve {} bytes (error {})",
-            reserve_bytes,
-            status
-        );
+    #[cfg(feature = "optimize_memory")]
+    {
+        let memory_mib = system.total_memory() / (1024 * 1024);
+        let reserve_bytes = if memory_mib > 4096 { 256 } else { 64 } * 1024 * 1024;
+        let mut arena = Default::default();
+        // The nonexclusive arena is available to the global allocator.
+        let status = unsafe {
+            libmimalloc_sys::mi_reserve_os_memory_ex(reserve_bytes, false, false, false, &mut arena)
+        };
+        if status != 0 {
+            log::warn!("mimalloc could not reserve {reserve_bytes} bytes (error {status})");
+        }
     }
 
     info!(
