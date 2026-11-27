@@ -1,6 +1,3 @@
-use std::env;
-use std::fs;
-use std::path::Path;
 use std::process::Command;
 
 fn main() {
@@ -11,15 +8,6 @@ fn main() {
         println!("cargo:warning=Radare2 no parece estar instalado. El analizador puede no funcionar correctamente.");
         println!("cargo:warning=Por favor instale Radare2 desde: https://github.com/radareorg/radare2/releases");
         
-        // En Windows, podemos sugerir la descarga automática
-        if cfg!(windows) {
-            println!("cargo:warning=En Windows, ejecute los siguientes comandos:");
-            println!("cargo:warning=1. curl.exe -L -o radare2_installer.exe https://github.com/radareorg/radare2/releases/download/5.8.8/radare2_installer-msvc_64.exe");
-            println!("cargo:warning=2. Ejecute radare2_installer.exe");
-            println!("cargo:warning=3. Agregue C:\\Program Files\\radare2 al PATH del sistema");
-        } else {
-            println!("cargo:warning=En Linux/macOS, use el gestor de paquetes de su sistema o compile desde el código fuente.");
-        }
     } else {
         // Verificar la versión de r2
         match get_radare2_version() {
@@ -75,7 +63,8 @@ fn get_radare2_version() -> Result<String, Box<dyn std::error::Error>> {
 
 fn is_version_compatible(version: &str) -> bool {
     // Extraer el número de versión (asumiendo formato x.y.z)
-    let version_parts: Vec<&str> = version.split('.').collect();
+    let number = version.split_ascii_whitespace().nth(1).unwrap_or_default();
+    let version_parts: Vec<&str> = number.split('.').collect();
     if version_parts.len() < 2 {
         return false;
     }

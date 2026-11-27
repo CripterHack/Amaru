@@ -10,7 +10,9 @@
     "isolatedModules": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "$lib/*": ["src/lib/*"],
+      "$components/*": ["src/lib/components/*"]
     },
     "moduleResolution": "bundler",
     "forceConsistentCasingInFileNames": true,

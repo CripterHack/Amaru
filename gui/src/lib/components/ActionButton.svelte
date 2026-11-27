@@ -1,8 +1,8 @@
-<script>
+<script lang="ts">
   import { Search, HardDrive, Download, Archive, Shield } from 'lucide-svelte';
   
   export let text = '';
-  export let icon = '';
+  export let icon: keyof typeof icons | '' = '';
   export let onClick = () => {};
   export let disabled = false;
   export let primary = false;
@@ -15,7 +15,7 @@
     'shield': Shield
   };
   
-  const IconComponent = icons[icon];
+  $: IconComponent = icon && icons[icon];
 </script>
 
 <button

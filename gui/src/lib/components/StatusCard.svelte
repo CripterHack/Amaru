@@ -1,11 +1,11 @@
-<script>
+<script lang="ts">
   import { Shield, Activity, Clock, AlertTriangle } from 'lucide-svelte';
   
   export let title = '';
   export let status = '';
-  export let statusType = 'success'; // success, warning, danger, info
-  export let icon = 'shield'; // shield, activity, clock, alert-triangle
-  export let action = null;
+  export let statusType: keyof typeof statusColors = 'success'; // success, warning, danger, info
+  export let icon: keyof typeof icons = 'shield'; // shield, activity, clock, alert-triangle
+  export let action: (() => void) | null = null;
   export let actionText = 'Toggle';
   
   const icons = {
@@ -29,7 +29,7 @@
     info: 'text-blue-500'
   };
   
-  const IconComponent = icons[icon];
+  $: IconComponent = icons[icon];
 </script>
 
 <div class="bg-white rounded-lg shadow-md p-6 relative overflow-hidden">

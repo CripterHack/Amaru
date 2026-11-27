@@ -34,7 +34,7 @@ La sección de soporte técnico ayuda a los usuarios a resolver problemas y acce
 
 - Preguntas frecuentes (FAQ)
 - Guías de resolución de problemas
-- Canales de soporte disponibles
+- Canales de soporte confirmados y previstos
 - Procedimientos para reportar errores
 - Solicitudes de características
 
@@ -44,4 +44,4 @@ Las contribuciones pueden incluir correcciones, ejemplos reproducibles y resulta
 
 ---
 
-Para obtener más información o asistencia, visita [www.amaru-antivirus.com](https://www.amaru-antivirus.com) o contacta a nuestro equipo de soporte en support@amaru-antivirus.com.
+El canal público confirmado para incidencias y propuestas es [GitHub Issues](https://github.com/CripterHack/Amaru/issues). El sitio de soporte y los buzones de atención forman parte del servicio previsto. Su disponibilidad se registra en la [guía de contacto](./support/contact.md).

@@ -176,26 +176,26 @@
             >
               <div class="py-1" role="menu" aria-orientation="vertical">
                 <a
-                  href="#"
+                  href="#/settings"
                   class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
                   role="menuitem"
                 >
                   Configuración
                 </a>
                 <a
-                  href="#"
+                  href="#/help"
                   class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
                   role="menuitem"
                 >
                   Ayuda
                 </a>
-                <a
-                  href="#"
+                <button
+                  type="button" disabled
                   class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
                   role="menuitem"
                 >
                   Cerrar sesión
-                </a>
+                </button>
               </div>
             </div>
           {/if}

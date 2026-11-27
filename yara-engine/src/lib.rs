@@ -129,6 +129,9 @@ impl YaraEngine {
             let name = path.strip_prefix(&rules_dir).expect("entry under rules directory")
                 .to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
             let content = fs::read_to_string(path)?;
+            if content.as_bytes().contains(&0) {
+                return Err(YaraError::CompileError(format!("{}: rule contains a NUL byte", path.display())));
+            }
             let digest = format!("{:x}", md5::compute(&content));
             compiler = compiler.add_rules_str_with_namespace(&content, &name)
                 .map_err(|e| YaraError::CompileError(format!("{}: {}", path.display(), e)))?;

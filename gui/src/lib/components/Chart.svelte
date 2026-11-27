@@ -5,7 +5,7 @@
   // Register all Chart.js components
   ChartJS.register(...registerables);
   
-  export let data = [];
+  export let data: Record<string, string | number>[] = [];
   export let type: 'bar' | 'pie' | 'line' = 'bar';
   export let labelKey = 'label';
   export let valueKey = 'value';
@@ -34,7 +34,7 @@
     
     // Extract labels and values from data
     const labels = data.map(item => item[labelKey]);
-    const values = data.map(item => item[valueKey]);
+    const values = data.map(item => Number(item[valueKey]));
     const colors = generateColors(data.length);
     
     // Destroy previous chart instance if it exists

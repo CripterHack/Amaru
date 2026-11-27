@@ -19,6 +19,7 @@
   import ScanConfig from './routes/ScanConfig.svelte';
   import Quarantine from './routes/Quarantine.svelte';
   import Settings from './routes/Settings.svelte';
+  import HelpPage from './routes/help/HelpPage.svelte';
   
   // State
   let route: Writable<string> = writable('dashboard');
@@ -216,6 +217,8 @@
         <Quarantine />
       {:else if $route === 'settings'}
         <Settings />
+      {:else if $route === 'help'}
+        <HelpPage />
       {:else}
         <div class="container mx-auto p-8">
           <h1 class="text-2xl font-bold mb-4">Page Not Found</h1>

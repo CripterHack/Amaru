@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/tauri';
 
 export interface ConfigState {
@@ -78,16 +78,12 @@ function createConfigStore() {
     },
     
     saveConfig: async () => {
-      let currentConfig: ConfigState;
-      
-      subscribe(value => {
-        currentConfig = value;
-      })();
-      
+      const currentConfig = get({ subscribe });
       try {
         await invoke('save_config', { config: currentConfig });
       } catch (error) {
         console.error('Error saving config:', error);
+        throw error;
       }
     },
     

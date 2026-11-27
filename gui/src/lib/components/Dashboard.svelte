@@ -269,7 +269,7 @@
   {/if}
 </div>
 
-<style>
+<style lang="postcss">
   :global(.card) {
     @apply bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6 transition-all duration-200;
   }

@@ -1,22 +1,21 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
   import { fly } from 'svelte/transition';
   import { quintOut } from 'svelte/easing';
-  import Icon from '../../components/Icon.svelte';
-  import SearchBar from '../../components/SearchBar.svelte';
-  import Button from '../../components/Button.svelte';
+  import Icon from '../../lib/components/Icon.svelte';
   
   // Lista de categorías de ayuda
+  const guideBase = "https://github.com/CripterHack/Amaru/blob/main/docs/user-guides/";
   const categories = [
     { 
       id: 'getting-started',
       title: 'Primeros Pasos',
-      icon: 'rocket-launch',
+      icon: 'rocket',
       articles: [
-        { id: 'installation', title: 'Instalación y Activación', views: 2453 },
-        { id: 'quick-start', title: 'Guía de Inicio Rápido', views: 1876 },
-        { id: 'system-requirements', title: 'Requisitos del Sistema', views: 934 },
-        { id: 'interface-overview', title: 'Vista General de la Interfaz', views: 762 }
+        { id: 'installation', page: 'getting-started.md#instalación', title: 'Instalación y Activación', views: 2453 },
+        { id: 'quick-start', page: 'getting-started.md', title: 'Guía de Inicio Rápido', views: 1876 },
+        { id: 'system-requirements', page: 'getting-started.md#requisitos-del-sistema', title: 'Requisitos del Sistema', views: 934 },
+        { id: 'interface-overview', page: 'getting-started.md', title: 'Vista General de la Interfaz', views: 762 }
       ]
     },
     { 
@@ -24,11 +23,11 @@
       title: 'Protección',
       icon: 'shield-check',
       articles: [
-        { id: 'real-time-protection', title: 'Protección en Tiempo Real', views: 3245 },
-        { id: 'scanning', title: 'Tipos de Escaneo', views: 2876 },
-        { id: 'quarantine', title: 'Uso de la Cuarentena', views: 1932 },
-        { id: 'web-protection', title: 'Protección Web', views: 1128 },
-        { id: 'ransomware-protection', title: 'Protección contra Ransomware', views: 1543 }
+        { id: 'real-time-protection', page: 'realtime-protection.md#componentes-de-protección', title: 'Protección en Tiempo Real', views: 3245 },
+        { id: 'scanning', page: 'analyzing.md#tipos-de-análisis', title: 'Tipos de Escaneo', views: 2876 },
+        { id: 'quarantine', page: 'quarantine.md', title: 'Uso de la Cuarentena', views: 1932 },
+        { id: 'web-protection', page: 'realtime-protection.md#componentes-de-protección', title: 'Protección Web', views: 1128 },
+        { id: 'ransomware-protection', page: 'faq.md#amaru-protege-contra-ransomware', title: 'Protección contra Ransomware', views: 1543 }
       ]
     },
     { 
@@ -36,11 +35,11 @@
       title: 'Configuración',
       icon: 'cog',
       articles: [
-        { id: 'settings-overview', title: 'Vista General de Configuración', views: 1532 },
-        { id: 'exclusions', title: 'Configurar Exclusiones', views: 2145 },
-        { id: 'scheduled-scans', title: 'Escaneos Programados', views: 1432 },
-        { id: 'notifications', title: 'Configurar Notificaciones', views: 965 },
-        { id: 'performance', title: 'Optimización de Rendimiento', views: 1876 }
+        { id: 'settings-overview', page: 'getting-started.md', title: 'Vista General de Configuración', views: 1532 },
+        { id: 'exclusions', page: 'realtime-protection.md#exclusiones', title: 'Configurar Exclusiones', views: 2145 },
+        { id: 'scheduled-scans', page: 'analyzing.md#análisis-programados', title: 'Escaneos Programados', views: 1432 },
+        { id: 'notifications', page: 'realtime-protection.md#notificaciones', title: 'Configurar Notificaciones', views: 965 },
+        { id: 'performance', page: 'faq.md#rendimiento', title: 'Optimización de Rendimiento', views: 1876 }
       ]
     },
     { 
@@ -48,10 +47,10 @@
       title: 'Solución de Problemas',
       icon: 'wrench',
       articles: [
-        { id: 'common-issues', title: 'Problemas Comunes', views: 3421 },
-        { id: 'false-positives', title: 'Gestión de Falsos Positivos', views: 2876 },
-        { id: 'crash-recovery', title: 'Recuperación tras Fallos', views: 1243 },
-        { id: 'performance-issues', title: 'Problemas de Rendimiento', views: 1987 }
+        { id: 'common-issues', page: 'getting-started.md#solución-de-problemas-comunes', title: 'Problemas Comunes', views: 3421 },
+        { id: 'false-positives', page: 'quarantine.md#cómo-gestiono-un-falso-positivo', title: 'Gestión de Falsos Positivos', views: 2876 },
+        { id: 'crash-recovery', page: 'getting-started.md#solución-de-problemas-comunes', title: 'Recuperación tras Fallos', views: 1243 },
+        { id: 'performance-issues', page: 'faq.md#rendimiento', title: 'Problemas de Rendimiento', views: 1987 }
       ]
     },
     { 
@@ -59,10 +58,10 @@
       title: 'Actualizaciones',
       icon: 'refresh-cw',
       articles: [
-        { id: 'update-virus-db', title: 'Actualizar Base de Datos de Virus', views: 1876 },
-        { id: 'auto-updates', title: 'Actualizaciones Automáticas', views: 1324 },
-        { id: 'manual-updates', title: 'Actualización Manual', views: 854 },
-        { id: 'update-history', title: 'Historial de Actualizaciones', views: 643 }
+        { id: 'update-virus-db', page: 'updates.md#tipos-de-actualizaciones', title: 'Actualizar Base de Datos de Virus', views: 1876 },
+        { id: 'auto-updates', page: 'updates.md#actualizaciones-automáticas', title: 'Actualizaciones Automáticas', views: 1324 },
+        { id: 'manual-updates', page: 'updates.md#actualizaciones-manuales', title: 'Actualización Manual', views: 854 },
+        { id: 'update-history', page: 'updates.md#historial-de-actualizaciones', title: 'Historial de Actualizaciones', views: 643 }
       ]
     },
     { 
@@ -70,25 +69,29 @@
       title: 'Licencias',
       icon: 'key',
       articles: [
-        { id: 'activate-license', title: 'Activar Licencia', views: 2543 },
-        { id: 'license-types', title: 'Tipos de Licencia', views: 1435 },
-        { id: 'license-renewal', title: 'Renovación de Licencia', views: 1876 },
-        { id: 'transfer-license', title: 'Transferir Licencia', views: 954 }
+        { id: 'activate-license', page: 'faq.md#instalación-y-activación', title: 'Activar Licencia', views: 2543 },
+        { id: 'license-types', page: 'faq.md#licencias-y-planes', title: 'Tipos de Licencia', views: 1435 },
+        { id: 'license-renewal', page: 'faq.md#licencias-y-planes', title: 'Renovación de Licencia', views: 1876 },
+        { id: 'transfer-license', page: 'faq.md#licencias-y-planes', title: 'Transferir Licencia', views: 954 }
       ]
     }
   ];
   
   // Estado del componente
+  type Category = (typeof categories)[number];
+  type ArticleResult = Category['articles'][number] & { category: string; categoryId: string; categoryIcon: string };
   let searchQuery = '';
   let filteredCategories = [...categories];
-  let filteredArticles = [];
-  let selectedCategory = null;
+  let filteredArticles: ArticleResult[] = [];
+  let selectedCategory: Category | null = null;
   let showAllArticles = false;
-  let popularArticles = [];
+  let popularArticles: ArticleResult[] = [];
   let isLoading = true;
   
   // Buscar en artículos
-  function handleSearch() {
+  function handleSearch(queryText: string) {
+    searchQuery = queryText;
+    selectedCategory = null;
     if (!searchQuery.trim()) {
       filteredCategories = [...categories];
       filteredArticles = [];
@@ -117,8 +120,8 @@
   }
   
   // Seleccionar categoría
-  function selectCategory(categoryId) {
-    selectedCategory = categories.find(cat => cat.id === categoryId);
+  function selectCategory(categoryId: string) {
+    selectedCategory = categories.find(cat => cat.id === categoryId) ?? null;
     searchQuery = '';
     filteredArticles = [];
   }
@@ -140,11 +143,6 @@
     }
   }
   
-  // Navegar a artículo
-  function navigateToArticle(articleId, categoryId) {
-    console.log(`Navigating to article: ${articleId} in category: ${categoryId}`);
-    // Aquí implementarías la navegación real
-  }
   
   // Al montar el componente
   onMount(() => {
@@ -171,11 +169,13 @@
     <p>Encuentra respuestas a tus preguntas y aprende cómo aprovechar al máximo Amaru Antivirus</p>
     
     <div class="search-container">
-      <SearchBar 
-        bind:value={searchQuery} 
-        on:input={handleSearch}
+      <input
+        type="search"
+        class="help-search"
+        aria-label="Buscar en la ayuda"
         placeholder="Buscar en la ayuda..."
-        fullWidth={true}
+        value={searchQuery}
+        on:input={(event) => handleSearch(event.currentTarget.value)}
       />
     </div>
   </header>
@@ -203,18 +203,13 @@
         
         <div class="articles-list">
           {#each selectedCategory.articles as article}
-            <div 
-              class="article-item"
-              on:click={() => navigateToArticle(article.id, selectedCategory.id)}
-              on:keypress={(e) => e.key === 'Enter' && navigateToArticle(article.id, selectedCategory.id)}
-              tabindex="0"
-            >
+            <a href={guideBase + article.page} target="_blank" rel="noreferrer" class="article-item">
               <div class="article-info">
                 <h3>{article.title}</h3>
                 <span class="views">{article.views} visualizaciones</span>
               </div>
               <Icon name="chevron-right" />
-            </div>
+            </a>
           {/each}
         </div>
       </div>
@@ -231,12 +226,7 @@
         
         <div class="articles-list">
           {#each filteredArticles as article}
-            <div 
-              class="article-item"
-              on:click={() => navigateToArticle(article.id, article.categoryId)}
-              on:keypress={(e) => e.key === 'Enter' && navigateToArticle(article.id, article.categoryId)}
-              tabindex="0"
-            >
+            <a href={guideBase + article.page} target="_blank" rel="noreferrer" class="article-item">
               <div class="category-badge">
                 <Icon name={article.categoryIcon} size="0.8rem" />
                 <span>{article.category}</span>
@@ -246,7 +236,7 @@
                 <span class="views">{article.views} visualizaciones</span>
               </div>
               <Icon name="chevron-right" />
-            </div>
+            </a>
           {/each}
         </div>
       </div>
@@ -263,18 +253,13 @@
           
           <div class="categories-grid">
             {#each filteredCategories as category}
-              <div 
-                class="category-card"
-                on:click={() => selectCategory(category.id)}
-                on:keypress={(e) => e.key === 'Enter' && selectCategory(category.id)}
-                tabindex="0"
-              >
-                <div class="category-icon">
+              <button type="button" on:click={() => selectCategory(category.id)} class="category-card">
+                <span class="category-icon">
                   <Icon name={category.icon} size="1.8rem" />
-                </div>
-                <h3>{category.title}</h3>
-                <p>{category.articles.length} artículos</p>
-              </div>
+                </span>
+                <span class="category-title">{category.title}</span>
+                <span class="category-description">{category.articles.length} artículos</span>
+              </button>
             {/each}
           </div>
         </section>
@@ -284,12 +269,7 @@
           
           <div class="popular-articles">
             {#each popularArticles as article}
-              <div 
-                class="popular-article"
-                on:click={() => navigateToArticle(article.id, article.categoryId)}
-                on:keypress={(e) => e.key === 'Enter' && navigateToArticle(article.id, article.categoryId)}
-                tabindex="0"
-              >
+              <a href={guideBase + article.page} target="_blank" rel="noreferrer" class="popular-article">
                 <div class="article-info">
                   <div class="category-badge">
                     <Icon name={article.categoryIcon} size="0.8rem" />
@@ -298,7 +278,7 @@
                   <h3>{article.title}</h3>
                 </div>
                 <Icon name="chevron-right" />
-              </div>
+              </a>
             {/each}
           </div>
         </section>
@@ -310,22 +290,22 @@
             <div class="support-card">
               <Icon name="message-circle" size="2rem" />
               <h3>Contactar Soporte</h3>
-              <p>Nuestro equipo está listo para ayudarte con cualquier problema</p>
-              <Button variant="secondary">Contactar Ahora</Button>
+              <p>Consulta los problemas conocidos o informa de uno nuevo.</p>
+              <a href="https://github.com/CripterHack/Amaru/issues" target="_blank" rel="noreferrer">Consultar los issues</a>
             </div>
             
             <div class="support-card">
               <Icon name="users" size="2rem" />
               <h3>Comunidad</h3>
               <p>Conecta con otros usuarios y encuentra soluciones compartidas</p>
-              <Button variant="secondary">Visitar Foros</Button>
+              <small>Foros pendientes de publicación</small>
             </div>
             
             <div class="support-card">
               <Icon name="video" size="2rem" />
               <h3>Video Tutoriales</h3>
-              <p>Aprende a usar todas las funciones con nuestros videos</p>
-              <Button variant="secondary">Ver Videos</Button>
+              <p>Tutoriales previstos para las funciones de Amaru.</p>
+              <small>Videos pendientes de publicación</small>
             </div>
           </div>
         </section>
@@ -335,6 +315,15 @@
 </div>
 
 <style>
+  .help-search {
+    width: 100%;
+    padding: 0.65rem 1rem;
+    border: 1px solid currentColor;
+    border-radius: 0.5rem;
+    background: transparent;
+    color: inherit;
+  }
+
   .help-center {
     max-width: 1200px;
     margin: 0 auto;
@@ -439,12 +428,14 @@
     margin-bottom: 1rem;
   }
   
-  .category-card h3 {
+  .category-title {
+    display: block;
     font-size: 1.2rem;
     margin-bottom: 0.5rem;
   }
   
-  .category-card p {
+  .category-description {
+    display: block;
     color: var(--text-secondary);
     font-size: 0.9rem;
   }

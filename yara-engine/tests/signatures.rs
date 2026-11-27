@@ -12,10 +12,15 @@ fn bundled_rules_detect_eicar_on_disk_and_in_memory() -> Result<(), YaraError> {
     let in_memory = engine.scan_memory(&fs::read(fixture)?)?;
 
     for matches in [on_disk.matches, in_memory] {
-        let eicar = matches.iter().find(|m| m.rule_name == "EICAR_Test_File")
+        let eicar = matches
+            .iter()
+            .find(|m| m.rule_name == "EICAR_Test_File")
             .expect("EICAR signature from the official bundle");
         assert_eq!(eicar.meta["priority"], 10);
-        assert!(eicar.strings.iter().any(|s| s.offset == 0 && s.data.len() == 68));
+        assert!(eicar
+            .strings
+            .iter()
+            .any(|s| s.offset == 0 && s.data.len() == 68));
     }
     assert!(engine.scan_memory(b"ordinary file")?.is_empty());
     Ok(())

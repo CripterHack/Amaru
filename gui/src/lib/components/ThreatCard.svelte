@@ -1,10 +1,12 @@
-<script>
+<script lang="ts">
+  import type { ThreatEntry } from '$lib/stores/statusStore';
+  import { invoke } from '@tauri-apps/api/tauri';
   import { formatDate } from '$lib/utils';
   import { AlertTriangle, File, Shield, Trash2, Archive } from 'lucide-svelte';
   
-  export let threat = {};
+  export let threat: ThreatEntry;
   
-  const getThreatColor = (level) => {
+  const getThreatColor = (level: string) => {
     switch (level) {
       case 'critical':
         return 'bg-red-100 text-red-800';
@@ -21,7 +23,7 @@
   
   async function deleteFromQuarantine() {
     try {
-      await window.invoke('delete_quarantined_file', { id: threat.id });
+      await invoke('delete_quarantined_file', { id: threat.id });
     } catch (error) {
       console.error('Failed to delete from quarantine:', error);
     }
@@ -29,7 +31,7 @@
   
   async function restoreFromQuarantine() {
     try {
-      await window.invoke('restore_quarantined_file', { id: threat.id });
+      await invoke('restore_quarantined_file', { id: threat.id });
     } catch (error) {
       console.error('Failed to restore from quarantine:', error);
     }
@@ -51,8 +53,8 @@
           <p class="text-xs text-gray-500 truncate" title={threat.path}>{threat.path}</p>
         </div>
         
-        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {getThreatColor(threat.riskLevel)}">
-          {threat.riskLevel}
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {getThreatColor(threat.risk_level)}">
+          {threat.risk_level}
         </span>
       </div>
       
@@ -60,9 +62,9 @@
         <p class="text-xs text-gray-600">{threat.description}</p>
         
         <div class="mt-2 flex justify-between items-center">
-          <span class="text-xs text-gray-500">Detected: {formatDate(threat.detectedAt)}</span>
+          <span class="text-xs text-gray-500">Detected: {formatDate(threat.detected_at)}</span>
           
-          {#if threat.inQuarantine}
+          {#if threat.in_quarantine}
             <div class="flex space-x-2">
               <button 
                 on:click={restoreFromQuarantine}

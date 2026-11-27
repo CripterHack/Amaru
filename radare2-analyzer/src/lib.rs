@@ -1,25 +1,15 @@
-use log::{debug, error, info, warn};
+use log::debug;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::collections::HashMap;
-use std::env;
-use std::fs::File;
-use std::io::Read;
-use thiserror::Error;
-use serde::{Deserialize, Serialize};
-use subprocess::{Exec, Redirection};
-use std::str;
-use tokio::task;
-use md5;
-use sha2::{Sha256, Digest};
-use regex;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
+use thiserror::Error;
 use tokio::process::Command as AsyncCommand;
-use chrono;
 
 pub mod events;
-use events::{EventHandler, AnalyzerEvent};
+use events::AnalyzerEvent;
 
 /// Errors that can occur during Radare2 analysis
 #[derive(Error, Debug)]
@@ -153,67 +143,36 @@ pub struct Radare2Analyzer {
 
 impl Radare2Analyzer {
     /// Create a new Radare2 analyzer with the given configuration
-    pub fn new(config: Radare2Config) -> Result<Self, Radare2Error> {
-        // Check if r2 is available
-        let r2_path = match &config.radare2_path {
-            Some(path) => path.clone(),
-            None => {
-                // Try to find r2 in PATH
-                match Self::find_radare2() {
-                    Some(path) => path,
-                    None => return Err(Radare2Error::NotFound),
-                }
-            }
-        };
-        
-        // Verify r2 binary is executable
-        if !r2_path.exists() {
-            return Err(Radare2Error::NotFound);
-        }
-        
+    pub fn new(mut config: Radare2Config) -> Result<Self, Radare2Error> {
+        let binary = config.radare2_path.take().or_else(Self::find_radare2)
+            .filter(|path| path.is_file())
+            .ok_or(Radare2Error::NotFound)?;
+        config.radare2_path = Some(binary.canonicalize()?);
         Ok(Self { config })
     }
-    
-    /// Find radare2 binary in PATH
+
     fn find_radare2() -> Option<PathBuf> {
-        // First check environment variable
-        if let Ok(path) = env::var("AMARU_RADARE2_PATH") {
-            let p = PathBuf::from(path).join("r2.exe");
-            if p.exists() {
-                return Some(p);
+        let name = if cfg!(windows) { "r2.exe" } else { "r2" };
+        if let Some(value) = env::var_os("AMARU_RADARE2_PATH") {
+            let path = PathBuf::from(value);
+            let binary = if path.is_dir() { path.join(name) } else { path };
+            if binary.is_file() {
+                return Some(binary);
             }
         }
-        
-        // Check PATH
-        if let Ok(output) = Command::new("where").arg("r2").output() {
-            if output.status.success() {
-                if let Ok(path) = String::from_utf8(output.stdout) {
-                    let path = path.trim().to_string();
-                    return Some(PathBuf::from(path));
-                }
-            }
+
+        let path = env::var_os("PATH").unwrap_or_default();
+        let mut locations: Vec<_> = env::split_paths(&path).map(|dir| dir.join(name)).collect();
+        if cfg!(windows) {
+            locations.push(PathBuf::from(r"C:\Program Files\radare2\bin\r2.exe"));
+            locations.push(PathBuf::from(r"C:\radare2\bin\r2.exe"));
         }
-        
-        // Fallback to common locations
-        let common_locations = [
-            r"C:\Program Files\radare2\bin\r2.exe",
-            r"C:\radare2\bin\r2.exe",
-        ];
-        
-        for location in common_locations.iter() {
-            let path = PathBuf::from(location);
-            if path.exists() {
-                return Some(path);
-            }
-        }
-        
-        None
+        locations.into_iter().find(|path| path.is_file())
     }
-    
+
     /// Analyze a file with Radare2
     pub async fn analyze_file<P: AsRef<Path>>(&self, file_path: P) -> Result<AnalysisResult, Radare2Error> {
         let path = file_path.as_ref();
-        let start_time = std::time::Instant::now();
         
         // Notify analysis started
         if let Some(sender) = &self.config.event_sender {
@@ -239,7 +198,14 @@ impl Radare2Analyzer {
         };
         
         // Analyze file
-        match self.analyze_file_internal(path, &mut result).await {
+        let analysis = self.analyze_file_internal(path, &mut result);
+        let deadline = Duration::from_secs(self.config.timeout_seconds);
+        let outcome = tokio::time::timeout(deadline, analysis).await.unwrap_or_else(|_| {
+            Err(Radare2Error::AnalysisError(format!(
+                "Radare2 analysis exceeded {} seconds", deadline.as_secs()
+            )))
+        });
+        match outcome {
             Ok(_) => {
                 // Notify analysis completed
                 if let Some(sender) = &self.config.event_sender {
@@ -268,21 +234,19 @@ impl Radare2Analyzer {
         let path = path.as_ref();
         let start_time = std::time::Instant::now();
         
-        // Get file info
-        self.get_file_info(path, result)?;
-        
-        // Get sections
-        self.get_sections(path, result)?;
-        
-        // Get imports
-        self.get_imports(path, result)?;
-        
-        // Get strings
-        self.get_strings(path, result)?;
-        
-        // Analyze behaviors
-        let behaviors = self.analyze_behaviors(path).await?;
-        
+        if !path.is_file() {
+            return Err(Radare2Error::InvalidPath(path.display().to_string()));
+        }
+        // Absolute paths keep filenames separate from options and r2 IO schemes.
+        let path = path.canonicalize()?;
+        self.get_file_info(&path, result).await?;
+        self.get_sections(&path, result).await?;
+        self.get_imports(&path, result).await?;
+        let strings = self.analyze_strings(&path).await?;
+        result.suspicious_strings = strings.suspicious_strings.iter()
+            .map(|entry| entry.string.clone()).collect();
+        let behaviors = self.analyze_behaviors(&result.imports, &strings);
+
         // Notify each detected behavior
         if let Some(sender) = &self.config.event_sender {
             for behavior in &behaviors {
@@ -319,49 +283,26 @@ impl Radare2Analyzer {
     }
     
     /// Get basic file information
-    fn get_file_info(&self, file_path: &Path, result: &mut AnalysisResult) -> Result<(), Radare2Error> {
-        // Use r2 to get file info
-        let output = self.run_r2_command(file_path, "-qj")?;
-        
-        // Parse JSON
-        let info: serde_json::Value = serde_json::from_str(&output)
-            .map_err(|e| Radare2Error::ParseError(format!("Failed to parse file info: {}", e)))?;
-        
-        // Extract information
-        if let Some(core) = info.get("core") {
-            if let Some(file) = core.get("file") {
-                if let Some(size) = file.get("size") {
-                    result.size = size.as_u64().map(|s| s as usize);
-                }
-                
-                if let Some(md5) = file.get("md5") {
-                    result.md5 = md5.as_str().map(String::from);
-                }
-                
-                if let Some(sha256) = file.get("sha256") {
-                    result.sha256 = sha256.as_str().map(String::from);
-                }
-            }
-            
-            if let Some(bin) = core.get("bin") {
-                if let Some(type_) = bin.get("type") {
-                    result.file_type = type_.as_str().map(String::from);
-                }
-            }
-        }
-        
+    async fn get_file_info(&self, path: &Path, result: &mut AnalysisResult) -> Result<(), Radare2Error> {
+        let info: serde_json::Value = self.run_json(path, "ij").await?;
+        let size = info.pointer("/core/size").and_then(|size| size.as_u64())
+            .ok_or_else(|| Radare2Error::ParseError("Missing file size in ij output".into()))?;
+        result.size = Some(usize::try_from(size)
+            .map_err(|_| Radare2Error::ParseError("File size exceeds platform limits".into()))?);
+        result.file_type = info.pointer("/bin/class").or_else(|| info.pointer("/core/format"))
+            .and_then(|value| value.as_str()).map(String::from);
+        let hashes: serde_json::Value = self.run_json(path, "itj").await?;
+        result.md5 = hashes["md5"].as_str().map(String::from);
+        result.sha256 = hashes["sha256"].as_str().map(String::from);
         Ok(())
     }
-    
-    /// Get PE sections
-    fn get_sections(&self, file_path: &Path, result: &mut AnalysisResult) -> Result<(), Radare2Error> {
-        // Use r2 to get sections
-        let output = self.run_r2_command(file_path, "-qj iSj")?;
-        
-        // Parse JSON
-        let sections: Vec<serde_json::Value> = serde_json::from_str(&output)
-            .map_err(|e| Radare2Error::ParseError(format!("Failed to parse sections: {}", e)))?;
-        
+
+    async fn get_sections(&self, path: &Path, result: &mut AnalysisResult) -> Result<(), Radare2Error> {
+        let output: serde_json::Value = self.run_json(path, "iSj entropy,md5").await?;
+        // Radare2 5.x wraps the hashed section list, while 6.x returns the array.
+        let sections = output.get("sections").unwrap_or(&output).as_array()
+            .ok_or_else(|| Radare2Error::ParseError("Missing sections in iSj output".into()))?;
+
         // Process sections
         for section in sections {
             let name = section.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
@@ -369,7 +310,7 @@ impl Radare2Analyzer {
             let vsize = section.get("vsize").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let perm = section.get("perm").and_then(|p| p.as_str()).unwrap_or("").to_string();
             let md5 = section.get("md5").and_then(|h| h.as_str()).map(String::from);
-            let entropy = section.get("entropy").and_then(|e| e.as_f64()).unwrap_or(0.0);
+            let entropy = section.get("entropy").and_then(|e| e.as_f64().or_else(|| e.as_str()?.parse().ok())).unwrap_or(0.0);
             
             result.sections.push(Section {
                 name,
@@ -385,14 +326,9 @@ impl Radare2Analyzer {
     }
     
     /// Get imports
-    fn get_imports(&self, file_path: &Path, result: &mut AnalysisResult) -> Result<(), Radare2Error> {
-        // Use r2 to get imports
-        let output = self.run_r2_command(file_path, "-qj iij")?;
-        
-        // Parse JSON
-        let imports: Vec<serde_json::Value> = serde_json::from_str(&output)
-            .map_err(|e| Radare2Error::ParseError(format!("Failed to parse imports: {}", e)))?;
-        
+    async fn get_imports(&self, path: &Path, result: &mut AnalysisResult) -> Result<(), Radare2Error> {
+        let imports: Vec<serde_json::Value> = self.run_json(path, "iij").await?;
+
         // Process imports
         for import in imports {
             let name = import.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
@@ -410,40 +346,35 @@ impl Radare2Analyzer {
     }
     
     /// Get strings and filter suspicious ones
-    fn get_strings(&self, file_path: &Path, result: &mut AnalysisResult) -> Result<(), Radare2Error> {
-        // Use r2 to get strings
-        let output = self.run_r2_command(file_path, "-qj izj")?;
-        
-        // Parse JSON
-        let strings: Vec<serde_json::Value> = serde_json::from_str(&output)
-            .map_err(|e| Radare2Error::ParseError(format!("Failed to parse strings: {}", e)))?;
-        
-        // Suspicious patterns
-        let suspicious_patterns = [
-            "cmd.exe", "powershell", "http://", "https://",
-            "CreateRemoteThread", "VirtualAlloc", "WriteProcessMemory",
-            "HKEY_", "RegCreateKey", "RegSetValue",
-            "WScript", "ShellExecute", "WinExec",
-            "URLDownload", "socket", "connect",
-            "crypt", "encrypt", "decrypt", "base64",
-        ];
-        
-        // Process strings
-        for string_obj in strings.iter().take(self.config.max_strings) {
-            if let Some(string) = string_obj.get("string").and_then(|s| s.as_str()) {
-                // Check if string matches any suspicious pattern
-                for pattern in &suspicious_patterns {
-                    if string.to_lowercase().contains(&pattern.to_lowercase()) {
-                        result.suspicious_strings.push(string.to_string());
-                        break;
-                    }
-                }
+    async fn analyze_strings(&self, path: &Path) -> Result<StringsAnalysis, Radare2Error> {
+        let entries: Vec<serde_json::Value> = self.run_json(path, "izzj").await?;
+        let mut strings = StringsAnalysis::default();
+        for entry in entries.iter().take(self.config.max_strings) {
+            let Some(value) = entry["string"].as_str() else { continue };
+            let category = categorize_string(value);
+            match category {
+                StringCategory::Network => strings.urls.push(value.to_owned()),
+                StringCategory::Registry => strings.registry_keys.push(value.to_owned()),
+                StringCategory::FileSystem => strings.file_paths.push(value.to_owned()),
+                _ => {}
+            }
+            if value.parse::<std::net::IpAddr>().is_ok() {
+                strings.ips.push(value.to_owned());
+            }
+            if is_suspicious_string(value) {
+                let offset = entry["paddr"].as_u64()
+                    .ok_or_else(|| Radare2Error::ParseError("Missing string offset in izzj output".into()))?;
+                strings.suspicious_strings.push(SuspiciousString {
+                    string: value.to_owned(),
+                    offset,
+                    category,
+                    risk_level: assess_string_risk(value),
+                });
             }
         }
-        
-        Ok(())
+        Ok(strings)
     }
-    
+
     /// Calculate risk score based on various indicators
     fn calculate_risk_score(&self, behaviors: &[DetectedBehavior]) -> u8 {
         let mut score = 0u8;
@@ -465,7 +396,6 @@ impl Radare2Analyzer {
         let mut network_count = 0;
         let mut file_count = 0;
         let mut process_count = 0;
-        let mut registry_count = 0;
         let mut anti_analysis_count = 0;
         let mut crypto_count = 0;
         
@@ -474,7 +404,6 @@ impl Radare2Analyzer {
                 "Network Communication" => network_count += 1,
                 "File System Operations" => file_count += 1,
                 "Process Manipulation" => process_count += 1,
-                "Registry Manipulation" => registry_count += 1,
                 "Anti-Analysis Techniques" => anti_analysis_count += 1,
                 _ if behavior.name.contains("Crypt") => crypto_count += 1,
                 _ => {}
@@ -499,66 +428,44 @@ impl Radare2Analyzer {
         }
     }
     
-    /// Run a Radare2 command and get the output
-    fn run_r2_command(&self, file_path: &Path, args: &str) -> Result<String, Radare2Error> {
-        let r2_path = match &self.config.radare2_path {
-            Some(path) => path.clone(),
-            None => {
-                match Self::find_radare2() {
-                    Some(path) => path,
-                    None => return Err(Radare2Error::NotFound),
-                }
-            }
-        };
-        
-        let file_path_str = file_path.to_string_lossy();
-        let full_args = format!("{} {}", args, file_path_str);
-        
-        debug!("Running r2 command: {} {}", r2_path.display(), full_args);
-        
-        let result = Exec::cmd(r2_path)
-            .args(full_args.split_whitespace().collect::<Vec<_>>().as_slice())
-            .stdout(Redirection::Pipe)
-            .stderr(Redirection::Pipe)
-            .capture()
-            .map_err(|e| Radare2Error::CommandError(format!("Failed to execute r2: {}", e)))?;
-        
-        if !result.success() {
-            let stderr = String::from_utf8_lossy(&result.stderr);
-            return Err(Radare2Error::CommandError(format!("r2 command failed: {}", stderr)));
+    async fn run_json<T: DeserializeOwned>(&self, path: &Path, query: &str) -> Result<T, Radare2Error> {
+        let binary = self.config.radare2_path.as_ref().ok_or(Radare2Error::NotFound)?;
+        debug!("Running r2 {} on {}", query, path.display());
+        let output = AsyncCommand::new(binary)
+            .args(["-NN", "-q", "-c", query])
+            .arg(path)
+            .kill_on_drop(true)
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Err(Radare2Error::CommandError(format!(
+                "{}: {}", query, String::from_utf8_lossy(&output.stderr)
+            )));
         }
-        
-        let stdout = String::from_utf8_lossy(&result.stdout).to_string();
-        Ok(stdout)
+        serde_json::from_slice(&output.stdout).map_err(|e| {
+            Radare2Error::ParseError(format!("Invalid {} output: {}", query, e))
+        })
     }
 
-    /// Analizar comportamientos sospechosos
-    async fn analyze_behaviors<P: AsRef<Path>>(&self, path: P) -> Result<Vec<DetectedBehavior>, Radare2Error> {
-        let path = path.as_ref();
+    fn analyze_behaviors(&self, imports: &[Import], strings: &StringsAnalysis) -> Vec<DetectedBehavior> {
         let mut behaviors = Vec::new();
-        
-        // Obtener imports
-        let imports = self.analyze_imports(path).await?;
-        
-        // Obtener strings
-        let strings = self.analyze_strings(path).await?;
-        
+
         // Analizar comportamientos de red
-        self.analyze_network_behaviors(&imports, &strings, &mut behaviors);
+        self.analyze_network_behaviors(imports, strings, &mut behaviors);
         
         // Analizar comportamientos de sistema de archivos
-        self.analyze_filesystem_behaviors(&imports, &strings, &mut behaviors);
+        self.analyze_filesystem_behaviors(imports, strings, &mut behaviors);
         
         // Analizar comportamientos de proceso
-        self.analyze_process_behaviors(&imports, &strings, &mut behaviors);
+        self.analyze_process_behaviors(imports, strings, &mut behaviors);
         
         // Analizar comportamientos de registro
-        self.analyze_registry_behaviors(&imports, &strings, &mut behaviors);
+        self.analyze_registry_behaviors(imports, strings, &mut behaviors);
         
         // Analizar comportamientos anti-análisis
-        self.analyze_anti_analysis_behaviors(&imports, &strings, &mut behaviors);
+        self.analyze_anti_analysis_behaviors(imports, strings, &mut behaviors);
         
-        Ok(behaviors)
+        behaviors
     }
     
     /// Analizar comportamientos de red
@@ -649,11 +556,11 @@ impl Radare2Analyzer {
         // Buscar strings relacionados con procesos
         evidence.extend(strings.suspicious_strings.iter()
             .filter(|s| {
-                let s = s.to_lowercase();
+                let s = s.string.to_lowercase();
                 s.contains("cmd.exe") || s.contains("powershell") ||
                 s.contains("wscript") || s.contains("rundll32")
             })
-            .map(|s| format!("Process: {}", s)));
+            .map(|s| format!("Process: {}", s.string)));
         
         if !evidence.is_empty() {
             let severity = if evidence.iter().any(|e| 
@@ -728,12 +635,12 @@ impl Radare2Analyzer {
         // Buscar strings anti-análisis
         evidence.extend(strings.suspicious_strings.iter()
             .filter(|s| {
-                let s = s.to_lowercase();
+                let s = s.string.to_lowercase();
                 s.contains("debug") || s.contains("sandbox") ||
                 s.contains("virtual") || s.contains("vmware") ||
                 s.contains("virtualbox") || s.contains("analysis")
             })
-            .map(|s| format!("Anti-Analysis: {}", s)));
+            .map(|s| format!("Anti-Analysis: {}", s.string)));
         
         if !evidence.is_empty() {
             behaviors.push(DetectedBehavior {
@@ -747,19 +654,15 @@ impl Radare2Analyzer {
 
     /// Verificar la instalación de Radare2
     pub fn check_installation() -> bool {
-        match Command::new("r2").arg("-v").output() {
-            Ok(output) => {
-                if !output.status.success() {
-                    return false;
-                }
-                
-                let version = String::from_utf8_lossy(&output.stdout);
-                version.contains("radare2")
-            }
-            Err(_) => false
-        }
+        Self::find_radare2().is_some_and(|path| Self::is_installation(&path))
     }
-    
+
+    fn is_installation(binary: &Path) -> bool {
+        Command::new(binary).arg("-v").output().is_ok_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("radare2")
+        })
+    }
+
     /// Get installation instructions
     pub fn get_installation_instructions() -> String {
         let os = std::env::consts::OS;
@@ -794,73 +697,16 @@ impl Radare2Analyzer {
     
     /// Create a new Radare2 analyzer with installation verification
     pub async fn new_with_verification(config: Radare2Config) -> Result<Self, Radare2Error> {
-        // Verify installation first
-        if !Self::verify_installation() {
-            let instructions = Self::get_installation_instructions();
-            return Err(Radare2Error::NotInstalled);
-        }
-        
-        Self::new(config)
-    }
-}
-
-/// Helper function to check if any of the specified imports exist
-fn has_imports(imports: &[Import], names: &[&str]) -> bool {
-    for import in imports {
-        for &name in names {
-            if import.name.contains(name) {
-                return true;
-            }
+        let analyzer = Self::new(config).map_err(|error| match error {
+            Radare2Error::NotFound => Radare2Error::NotInstalled,
+            other => other,
+        })?;
+        if analyzer.config.radare2_path.as_deref().is_some_and(Self::is_installation) {
+            Ok(analyzer)
+        } else {
+            Err(Radare2Error::NotInstalled)
         }
     }
-    false
-}
-
-/// Helper function to check if any of the specified strings exist
-fn has_strings(strings: &[String], patterns: &[&str]) -> bool {
-    for string in strings {
-        let lowercase = string.to_lowercase();
-        for &pattern in patterns {
-            if lowercase.contains(pattern) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Helper function to extract imports as evidence
-fn imports_as_evidence(imports: &[Import], names: &[&str]) -> Vec<String> {
-    let mut evidence = Vec::new();
-    
-    for import in imports {
-        for &name in names {
-            if import.name.contains(name) {
-                let library = import.library.as_ref().map(|l| format!(" from {}", l)).unwrap_or_default();
-                evidence.push(format!("Import: {}{}", import.name, library));
-                break;
-            }
-        }
-    }
-    
-    evidence
-}
-
-/// Helper function to extract strings as evidence
-fn strings_as_evidence(strings: &[String], patterns: &[&str]) -> Vec<String> {
-    let mut evidence = Vec::new();
-    
-    for string in strings {
-        let lowercase = string.to_lowercase();
-        for &pattern in patterns {
-            if lowercase.contains(pattern) {
-                evidence.push(format!("String: {}", string));
-                break;
-            }
-        }
-    }
-    
-    evidence
 }
 
 /// Información del encabezado PE
@@ -906,7 +752,7 @@ impl PEInfo {
 }
 
 /// Análisis de strings encontrados
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StringsAnalysis {
     pub suspicious_strings: Vec<SuspiciousString>,
     pub urls: Vec<String>,
@@ -951,14 +797,16 @@ fn is_suspicious_string(s: &str) -> bool {
     let suspicious_patterns = [
         "cmd.exe", "powershell", "rundll32", "shell", "exec",
         "http://", "https://", "ftp://", 
-        "HKEY_", "RegCreateKey", "RegSetValue",
-        "CreateProcess", "CreateThread", "VirtualAlloc",
+        "hkey_", "regcreatekey", "regsetvalue",
+        "createprocess", "createthread", "virtualalloc",
         "crypt", "encrypt", "decrypt",
         "password", "pwd", "login",
-        "dump", "inject", "hook",
+        "dump", "inject", "hook", "writeprocessmemory", "wscript", "shellexecute",
+        "winexec", "urldownload", "socket", "connect", "base64",
     ];
     
-    suspicious_patterns.iter().any(|&pattern| s.to_lowercase().contains(pattern))
+    let lower = s.to_lowercase();
+    suspicious_patterns.iter().any(|&pattern| lower.contains(pattern))
 }
 
 fn categorize_string(s: &str) -> StringCategory {
@@ -970,10 +818,10 @@ fn categorize_string(s: &str) -> StringCategory {
         StringCategory::API
     } else if s.contains("http://") || s.contains("https://") || s.contains("ftp://") {
         StringCategory::Network
-    } else if s.contains("\\") || s.contains(".exe") || s.contains(".dll") {
-        StringCategory::FileSystem
     } else if s.contains("hkey_") || s.contains("registry") {
         StringCategory::Registry
+    } else if s.contains('\\') || s.contains(".exe") || s.contains(".dll") {
+        StringCategory::FileSystem
     } else if s.contains("crypt") || s.contains("encrypt") || s.contains("decrypt") {
         StringCategory::Crypto
     } else if s.contains("debug") || s.contains("inject") || s.contains("hook") {
@@ -1026,81 +874,61 @@ fn parse_section_characteristics(perm: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::fs::File;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
     use tempfile::tempdir;
 
-    #[test]
-    fn test_find_radare2() {
-        let r2_path = Radare2Analyzer::find_radare2();
-        println!("Radare2 path: {:?}", r2_path);
-    }
-
-    #[test]
-    fn test_radare2_installation() {
-        assert!(Radare2Analyzer::check_installation(), "Radare2 no está instalado");
+    #[tokio::test]
+    async fn missing_binary_is_an_error() {
+        let config = Radare2Config {
+            radare2_path: Some(tempdir().unwrap().path().join("missing")),
+            ..Default::default()
+        };
+        assert!(matches!(Radare2Analyzer::new_with_verification(config).await,
+            Err(Radare2Error::NotInstalled)));
     }
 
     #[tokio::test]
-    async fn test_analyze_pe_info() {
-        let config = Radare2Config::default();
-        let analyzer = Radare2Analyzer::new(config);
-        
-        // Crear un archivo PE de prueba
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let pe_header = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xFF\xFF\x00\x00\xB8\x00\x00\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00\x00\x00";
-        temp_file.write_all(pe_header).unwrap();
-        
-        let result = analyzer.analyze_pe_info(temp_file.path()).await;
-        assert!(result.is_ok(), "El análisis PE falló");
+    async fn missing_file_emits_an_error_event() {
+        let events = events::EventHandler::new();
+        let analyzer = Radare2Analyzer::new(Radare2Config {
+            radare2_path: Some(env::current_exe().unwrap()),
+            event_sender: Some(events.get_sender()),
+            ..Default::default()
+        }).unwrap();
+        let directory = tempdir().unwrap();
+        let result = analyzer.analyze_file(directory.path().join("absent")).await;
+        assert!(matches!(result, Err(Radare2Error::InvalidPath(_))));
+        let receiver = events.get_receiver();
+        assert!(matches!(receiver.try_recv(), Ok(AnalyzerEvent::AnalysisStarted { .. })));
+        assert!(matches!(receiver.try_recv(), Ok(AnalyzerEvent::AnalysisError { .. })));
+        assert!(receiver.try_recv().is_err());
     }
 
     #[tokio::test]
-    async fn test_analyze_strings() {
-        let config = Radare2Config::default();
-        let analyzer = Radare2Analyzer::new(config);
-        
-        // Crear un archivo con strings de prueba
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let test_content = b"MZ\x90\x00http://malicious.com\x00HKEY_LOCAL_MACHINE\\Software\x00cmd.exe\x00";
-        temp_file.write_all(test_content).unwrap();
-        
-        let result = analyzer.analyze_strings(temp_file.path()).await;
-        assert!(result.is_ok(), "El análisis de strings falló");
-        
-        let strings = result.unwrap();
-        assert!(!strings.urls.is_empty(), "No se detectaron URLs");
-        assert!(!strings.registry_keys.is_empty(), "No se detectaron claves de registro");
+    async fn analyze_pe_with_real_radare2() {
+        let analyzer = Radare2Analyzer::new_with_verification(Default::default()).await.unwrap();
+        let directory = tempdir().unwrap();
+        let file = directory.path().join("compiler identity.exe");
+        let original = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../build/CMakeFiles/3.29.5-msvc4/CompilerIdC/a.exe");
+        std::fs::copy(original, &file).unwrap();
+        let result = analyzer.analyze_file(&file).await.unwrap();
+        assert_eq!(result.size, Some(file.metadata().unwrap().len() as usize));
+        assert_eq!(result.file_type.as_deref(), Some("PE32+"));
+        assert_eq!(result.sha256.as_deref(), Some("7b2e0cafb5ccac1d76fce44889fa8ab1e2ce1ff9cacd8f755aadf69531eb9d27"));
+        assert!(result.sections.iter().any(|s| s.name == ".text" && s.entropy > 0.0));
+        assert!(result.imports.iter().any(|i| i.library.as_deref() == Some("KERNEL32.dll")));
     }
 
     #[tokio::test]
-    async fn test_analyze_imports() {
-        let config = Radare2Config::default();
-        let analyzer = Radare2Analyzer::new(config);
-        
-        // Crear un archivo PE de prueba con imports
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let pe_header = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xFF\xFF\x00\x00\xB8\x00\x00\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00\x00\x00";
-        temp_file.write_all(pe_header).unwrap();
-        
-        let result = analyzer.analyze_imports(temp_file.path()).await;
-        assert!(result.is_ok(), "El análisis de imports falló");
-    }
-
-    #[tokio::test]
-    async fn test_analyze_sections() {
-        let config = Radare2Config::default();
-        let analyzer = Radare2Analyzer::new(config);
-        
-        // Crear un archivo PE de prueba con secciones
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let pe_header = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xFF\xFF\x00\x00\xB8\x00\x00\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00\x00\x00";
-        temp_file.write_all(pe_header).unwrap();
-        
-        let result = analyzer.analyze_sections(temp_file.path()).await;
-        assert!(result.is_ok(), "El análisis de secciones falló");
+    async fn analyze_strings_with_real_radare2() {
+        let analyzer = Radare2Analyzer::new(Default::default()).unwrap();
+        let directory = tempdir().unwrap();
+        let file = directory.path().join("plain text.bin");
+        std::fs::write(&file, b"https://example.org\0HKEY_LOCAL_MACHINE\\Software\0cmd.exe\0").unwrap();
+        let result = analyzer.analyze_file(&file).await.unwrap();
+        assert!(result.suspicious_strings.iter().any(|s| s.contains("HKEY_LOCAL_MACHINE")));
+        let network = result.behaviors.iter().find(|b| b.name == "Network Communication").unwrap();
+        assert!(network.evidence.iter().any(|e| e.contains("https://example.org")));
     }
 
     #[test]
@@ -1142,34 +970,4 @@ mod tests {
         assert!(rx.contains(&"rx".to_string()));
     }
 
-    #[tokio::test]
-    async fn test_installation_verification() {
-        let result = Radare2Analyzer::verify_installation().await;
-        assert!(result.is_ok(), "La verificación de instalación debería funcionar");
-        
-        if let Ok(installed) = result {
-            if !installed {
-                println!("Radare2 no está instalado. Instrucciones de instalación:");
-                println!("{}", Radare2Analyzer::get_installation_instructions());
-            }
-        }
-    }
-    
-    #[tokio::test]
-    async fn test_new_with_verification() {
-        let config = Radare2Config::default();
-        let result = Radare2Analyzer::new_with_verification(config).await;
-        
-        match result {
-            Ok(_) => println!("Radare2 está instalado y configurado correctamente"),
-            Err(e) => {
-                if let Radare2Error::NotInstalled = e {
-                    println!("Radare2 no está instalado. Instrucciones:");
-                    println!("{}", Radare2Analyzer::get_installation_instructions());
-                } else {
-                    panic!("Error inesperado: {}", e);
-                }
-            }
-        }
-    }
-} 
+}

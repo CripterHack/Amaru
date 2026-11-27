@@ -4,6 +4,20 @@ Mantener tu antivirus actualizado es crucial para protegerte contra las amenazas
 
 Esta guía describe el comportamiento previsto del actualizador. La validación de los canales de distribución, los paquetes y su instalación figura en el [informe de desarrollo](../../status_development.md).
 
+## Validación actual de paquetes de reglas
+
+El componente Rust `updater` obtiene `manifest.json` y el descriptor `update.json` por HTTPS. Comprueba que ambos identifiquen la misma versión SemVer y que sea posterior a la instalada. El canal HTTPS autentica las rutas y la versión. Cada firma Ed25519 cubre los bytes de una regla y se verifica con la clave pública configurada localmente. El publicador genera el formato existente con `sign-update`.
+
+El instalador de reglas exige una firma y un SHA-256 por archivo `.yar` o `.yara`. Conserva las reglas locales en un directorio temporal, verifica todos los archivos descargados y guarda una copia de respaldo antes de activar el conjunto. Si falla una descarga, un hash o una firma, la versión activa conserva sus archivos. Los límites por descarga son 16 MiB por descriptor y 100 MiB por regla.
+
+Para ejecutar las pruebas del componente desde la raíz del repositorio:
+
+```shell
+cargo test --locked -p updater
+```
+
+Las pruebas emplean claves de prueba y un servidor local. La distribución pública de actualizaciones para Windows sigue pendiente de validación.
+
 ## Índice
 
 1. [Importancia de las Actualizaciones](#importancia-de-las-actualizaciones)

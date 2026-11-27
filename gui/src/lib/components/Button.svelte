@@ -1,5 +1,7 @@
 <script lang="ts">
-  export let variant: 'default' | 'primary' | 'danger' | 'success' = 'default';
+  let className = '';
+  export { className as class };
+  export let variant: 'default' | 'primary' | 'danger' | 'success' | 'secondary' | 'outline' | 'ghost' | 'text' = 'default';
   export let size: 'sm' | 'md' | 'lg' = 'md';
   export let type: 'button' | 'submit' | 'reset' = 'button';
   export let disabled = false;
@@ -11,7 +13,9 @@
 <button
   {type}
   {disabled}
-  class="button"
+  class="button {className}"
+  class:default={variant === 'default' || variant === 'secondary'}
+  class:outline={variant === 'outline'}
   class:primary={variant === 'primary'}
   class:danger={variant === 'danger'}
   class:success={variant === 'success'}
@@ -76,6 +80,10 @@
     @apply bg-success-600 text-white hover:bg-success-700 focus:ring-success-500;
   }
   
+  .button.outline {
+    @apply border-gray-400;
+  }
+
   .button.default {
     @apply bg-gray-100 text-gray-700 hover:bg-gray-200 focus:ring-gray-500
            dark:bg-gray-700 dark:text-gray-100 dark:hover:bg-gray-600;

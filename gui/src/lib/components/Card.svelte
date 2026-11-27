@@ -5,7 +5,7 @@
 </script>
 
 <div
-  class="card"
+  class="card {$$restProps.class ?? ''}"
   class:hoverable
   class:padding
   class:primary={variant === 'primary'}

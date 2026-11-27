@@ -1,12 +1,12 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
   import { fly } from 'svelte/transition';
   import { quintOut } from 'svelte/easing';
-  import Icon from '../../components/Icon.svelte';
-  import SearchBar from '../../components/SearchBar.svelte';
-  import Button from '../../components/Button.svelte';
+  import Icon from '../../lib/components/Icon.svelte';
+  import Button from '../../lib/components/Button.svelte';
   
   // Categories structure
+  const guideBase = "https://github.com/CripterHack/Amaru/blob/main/docs/user-guides/";
   const categories = [
     {
       id: 'getting-started',
@@ -14,10 +14,10 @@
       icon: 'rocket',
       description: 'Guías básicas para empezar a usar Amaru Antivirus',
       articles: [
-        { id: 'installation', title: 'Instalación y configuración inicial', popular: true },
-        { id: 'first-scan', title: 'Tu primer análisis de seguridad' },
-        { id: 'interface-overview', title: 'Descripción general de la interfaz' },
-        { id: 'system-requirements', title: 'Requisitos del sistema' }
+        { id: 'installation', page: 'getting-started.md#instalación', title: 'Instalación y configuración inicial', popular: true },
+        { id: 'first-scan', page: 'getting-started.md#realizar-un-primer-escaneo', title: 'Tu primer análisis de seguridad' },
+        { id: 'interface-overview', page: 'getting-started.md', title: 'Descripción general de la interfaz' },
+        { id: 'system-requirements', page: 'getting-started.md#requisitos-del-sistema', title: 'Requisitos del sistema' }
       ]
     },
     {
@@ -26,10 +26,10 @@
       icon: 'shield-check',
       description: 'Todo sobre escaneo de malware y configuraciones',
       articles: [
-        { id: 'scan-types', title: 'Tipos de análisis disponibles', popular: true },
-        { id: 'scheduled-scans', title: 'Configurar análisis programados' },
-        { id: 'custom-scans', title: 'Análisis personalizados' },
-        { id: 'exclusions', title: 'Configurar exclusiones' }
+        { id: 'scan-types', page: 'analyzing.md#tipos-de-análisis', title: 'Tipos de análisis disponibles', popular: true },
+        { id: 'scheduled-scans', page: 'analyzing.md#análisis-programados', title: 'Configurar análisis programados' },
+        { id: 'custom-scans', page: 'analyzing.md#análisis-personalizado', title: 'Análisis personalizados' },
+        { id: 'exclusions', page: 'realtime-protection.md#exclusiones', title: 'Configurar exclusiones' }
       ]
     },
     {
@@ -38,10 +38,10 @@
       icon: 'shield',
       description: 'Protección proactiva contra amenazas',
       articles: [
-        { id: 'real-time-overview', title: 'Cómo funciona la protección en tiempo real', popular: true },
-        { id: 'shields-config', title: 'Configuración de escudos de protección' },
-        { id: 'behavior-monitoring', title: 'Monitoreo de comportamiento' },
-        { id: 'ransomware-protection', title: 'Protección contra ransomware' }
+        { id: 'real-time-overview', page: 'realtime-protection.md#componentes-de-protección', title: 'Cómo funciona la protección en tiempo real', popular: true },
+        { id: 'shields-config', page: 'realtime-protection.md#configuración-de-la-protección', title: 'Configuración de escudos de protección' },
+        { id: 'behavior-monitoring', page: 'realtime-protection.md#componentes-de-protección', title: 'Monitoreo de comportamiento' },
+        { id: 'ransomware-protection', page: 'faq.md#amaru-protege-contra-ransomware', title: 'Protección contra ransomware' }
       ]
     },
     {
@@ -50,10 +50,10 @@
       icon: 'refresh-cw',
       description: 'Mantén tu protección al día',
       articles: [
-        { id: 'auto-updates', title: 'Configurar actualizaciones automáticas', popular: true },
-        { id: 'manual-updates', title: 'Actualizaciones manuales' },
-        { id: 'offline-updates', title: 'Actualizar sin conexión a internet' },
-        { id: 'update-troubleshooting', title: 'Solución de problemas de actualización' }
+        { id: 'auto-updates', page: 'updates.md#actualizaciones-automáticas', title: 'Configurar actualizaciones automáticas', popular: true },
+        { id: 'manual-updates', page: 'updates.md#actualizaciones-manuales', title: 'Actualizaciones manuales' },
+        { id: 'offline-updates', page: 'updates.md#descarga-offline', title: 'Actualizar sin conexión a internet' },
+        { id: 'update-troubleshooting', page: 'updates.md#solución-de-problemas', title: 'Solución de problemas de actualización' }
       ]
     },
     {
@@ -62,37 +62,41 @@
       icon: 'lock',
       description: 'Gestión de archivos potencialmente peligrosos',
       articles: [
-        { id: 'quarantine-overview', title: 'Entendiendo la cuarentena' },
-        { id: 'manage-quarantined', title: 'Administrar archivos en cuarentena', popular: true },
-        { id: 'restore-files', title: 'Restaurar archivos de cuarentena' },
-        { id: 'report-false-positive', title: 'Reportar falsos positivos' }
+        { id: 'quarantine-overview', page: 'quarantine.md', title: 'Entendiendo la cuarentena' },
+        { id: 'manage-quarantined', page: 'quarantine.md', title: 'Administrar archivos en cuarentena', popular: true },
+        { id: 'restore-files', page: 'quarantine.md#restaurar', title: 'Restaurar archivos de cuarentena' },
+        { id: 'report-false-positive', page: 'quarantine.md#cómo-gestiono-un-falso-positivo', title: 'Reportar falsos positivos' }
       ]
     },
     {
       id: 'troubleshooting',
       title: 'Solución de problemas',
-      icon: 'tool',
+      icon: 'wrench',
       description: 'Resolver problemas comunes',
       articles: [
-        { id: 'performance-issues', title: 'Problemas de rendimiento' },
-        { id: 'scan-errors', title: 'Errores durante el análisis' },
-        { id: 'activation-issues', title: 'Problemas de activación', popular: true },
-        { id: 'diagnostic-tools', title: 'Herramientas de diagnóstico' }
+        { id: 'performance-issues', page: 'faq.md#rendimiento', title: 'Problemas de rendimiento' },
+        { id: 'scan-errors', page: 'getting-started.md#solución-de-problemas-comunes', title: 'Errores durante el análisis' },
+        { id: 'activation-issues', page: 'faq.md#instalación-y-activación', title: 'Problemas de activación', popular: true },
+        { id: 'diagnostic-tools', page: '../support/contact.md#diagnóstico-y-herramientas', title: 'Herramientas de diagnóstico' }
       ]
     }
   ];
   
   // State variables
+  type Category = (typeof categories)[number];
+  type ArticleResult = Category['articles'][number] & { categoryId: string; categoryTitle: string };
   let searchQuery = '';
   let filteredCategories = [...categories];
-  let filteredArticles = [];
-  let selectedCategory = null;
+  let filteredArticles: ArticleResult[] = [];
+  let selectedCategory: Category | null = null;
   let showAllArticles = false;
-  let popularArticles = [];
+  let popularArticles: ArticleResult[] = [];
   let isLoading = true;
   
   // Search functionality
-  function handleSearch() {
+  function handleSearch(queryText: string) {
+    searchQuery = queryText;
+    selectedCategory = null;
     // Reset view when clearing search
     if (!searchQuery) {
       filteredCategories = [...categories];
@@ -125,8 +129,8 @@
   }
   
   // Select category
-  function selectCategory(categoryId) {
-    selectedCategory = categories.find(cat => cat.id === categoryId);
+  function selectCategory(categoryId: string) {
+    selectedCategory = categories.find(cat => cat.id === categoryId) ?? null;
     searchQuery = '';
     filteredArticles = [];
     showAllArticles = false;
@@ -156,12 +160,6 @@
     }
   }
   
-  // Navigate to article - would link to actual documentation
-  function navigateToArticle(articleId, categoryId) {
-    console.log(`Navigating to article: ${articleId} in category: ${categoryId}`);
-    // Implementation would depend on routing solution
-    // For example: router.push(`/help/article/${categoryId}/${articleId}`);
-  }
   
   // Initialize component
   onMount(() => {
@@ -188,10 +186,13 @@
     <p>Encuentra respuestas a tus preguntas sobre Amaru Antivirus</p>
     
     <div class="search-container">
-      <SearchBar
-        bind:value={searchQuery}
+      <input
+        type="search"
+        class="help-search"
+        aria-label="Buscar en la ayuda"
         placeholder="Buscar en la ayuda..."
-        on:search={handleSearch}
+        value={searchQuery}
+        on:input={(event) => handleSearch(event.currentTarget.value)}
       />
     </div>
   </div>
@@ -223,12 +224,7 @@
         
         <div class="articles-list">
           {#each selectedCategory.articles as article}
-            <div 
-              class="article-item"
-              on:click={() => navigateToArticle(article.id, selectedCategory.id)}
-              on:keypress={(e) => e.key === 'Enter' && navigateToArticle(article.id, selectedCategory.id)}
-              tabindex="0"
-            >
+            <a href={guideBase + article.page} target="_blank" rel="noreferrer" class="article-item">
               <div class="article-info">
                 <h3>{article.title}</h3>
                 <Icon name="chevron-right" />
@@ -236,7 +232,7 @@
               {#if article.popular}
                 <span class="popular-tag">Popular</span>
               {/if}
-            </div>
+            </a>
           {/each}
         </div>
       </div>
@@ -267,12 +263,7 @@
         
         <div class="articles-list">
           {#each filteredArticles as article}
-            <div 
-              class="article-item"
-              on:click={() => navigateToArticle(article.id, article.categoryId)}
-              on:keypress={(e) => e.key === 'Enter' && navigateToArticle(article.id, article.categoryId)}
-              tabindex="0"
-            >
+            <a href={guideBase + article.page} target="_blank" rel="noreferrer" class="article-item">
               <div class="article-info">
                 <h3>{article.title}</h3>
                 <span class="category-tag">{article.categoryTitle}</span>
@@ -281,7 +272,7 @@
               {#if article.popular}
                 <span class="popular-tag">Popular</span>
               {/if}
-            </div>
+            </a>
           {/each}
         </div>
       </div>
@@ -289,18 +280,13 @@
       <!-- Categories grid view (default view) -->
       <div class="categories-grid" transition:fly={{ y: 20, duration: 300, easing: quintOut }}>
         {#each filteredCategories as category}
-          <div 
-            class="category-card"
-            on:click={() => selectCategory(category.id)}
-            on:keypress={(e) => e.key === 'Enter' && selectCategory(category.id)}
-            tabindex="0"
-          >
-            <div class="category-icon">
-              <Icon name={category.icon} size="large" />
-            </div>
-            <h2>{category.title}</h2>
-            <p>{category.description}</p>
-          </div>
+          <button type="button" on:click={() => selectCategory(category.id)} class="category-card">
+            <span class="category-icon">
+              <Icon name={category.icon} size={32} />
+            </span>
+            <span class="category-title">{category.title}</span>
+            <span class="category-description">{category.description}</span>
+          </button>
         {/each}
       </div>
       
@@ -318,19 +304,14 @@
           
         <div class="popular-articles">
           {#each popularArticles as article}
-            <div 
-              class="popular-article"
-              on:click={() => navigateToArticle(article.id, article.categoryId)}
-              on:keypress={(e) => e.key === 'Enter' && navigateToArticle(article.id, article.categoryId)}
-              tabindex="0"
-            >
+            <a href={guideBase + article.page} target="_blank" rel="noreferrer" class="popular-article">
               <Icon name="file-text" />
               <div class="article-info">
                 <span>{article.title}</span>
                 <small>{article.categoryTitle}</small>
               </div>
-              <Icon name="chevron-right" size="small" />
-            </div>
+              <Icon name="chevron-right" size={16} />
+            </a>
           {/each}
         </div>
       </div>
@@ -338,10 +319,9 @@
       <!-- Contact support section -->
       <div class="support-section">
         <h2>¿No encuentras lo que buscas?</h2>
-        <p>Nuestro equipo de soporte está listo para ayudarte</p>
+        <p>Consulta los problemas conocidos o informa de uno nuevo.</p>
         <div class="support-buttons">
-          <Button variant="primary" icon="message-circle">Contactar Soporte</Button>
-          <Button variant="outline" icon="mail">Enviar Email</Button>
+          <a href="https://github.com/CripterHack/Amaru/issues" target="_blank" rel="noreferrer">Consultar los issues</a>
         </div>
       </div>
     {/if}
@@ -349,6 +329,15 @@
 </div>
 
 <style>
+  .help-search {
+    width: 100%;
+    padding: 0.65rem 1rem;
+    border: 1px solid currentColor;
+    border-radius: 0.5rem;
+    background: transparent;
+    color: inherit;
+  }
+
   .help-container {
     max-width: 1200px;
     margin: 0 auto;
@@ -399,13 +388,15 @@
     box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
   }
   
-  .category-card h2 {
+  .category-title {
+    display: block;
     margin: 1rem 0 0.5rem;
     font-size: 1.3rem;
     color: var(--heading-color);
   }
   
-  .category-card p {
+  .category-description {
+    display: block;
     color: var(--text-secondary);
     font-size: 0.95rem;
     margin: 0;
