@@ -2,6 +2,8 @@
 
 Bienvenido a las Preguntas Frecuentes de Amaru Antivirus. Aquí encontrarás respuestas a las dudas más comunes sobre nuestro software de protección.
 
+Las funciones, planes comerciales y canales de soporte descritos corresponden al alcance previsto. Consulta el estado de la versión experimental y el canal de distribución en el [README](../../README.md).
+
 ## Índice
 
 1. [Información General](#información-general)
@@ -48,12 +50,12 @@ No, Amaru complementa el Firewall de Windows en lugar de reemplazarlo. Ambos fun
 
 ### ¿Cómo instalo Amaru Antivirus?
 
-1. Descarga el instalador desde [nuestro sitio web oficial](https://www.amaru-antivirus.com/downloads)
+1. Comprueba si hay un instalador publicado para tu versión en [GitHub Releases](https://github.com/CripterHack/Amaru/releases). A fecha del 27 de noviembre de 2026 la primera distribución está pendiente.
 2. Ejecuta el archivo descargado
 3. Sigue las instrucciones del asistente de instalación
 4. Una vez completada la instalación, reinicia tu dispositivo para asegurar la protección completa
 
-Para instrucciones detalladas, consulta nuestra [Guía de Instalación](./installation.md).
+Para instrucciones detalladas, consulta nuestra [Guía de Instalación](./getting-started.md#instalación).
 
 ### ¿Debo desinstalar otro antivirus antes de instalar Amaru?
 
@@ -139,7 +141,7 @@ Si Amaru no se actualiza correctamente:
 2. Asegúrate de que el servicio de Amaru está en ejecución
 3. Intenta actualizar manualmente desde "Configuración" > "Actualizaciones" > "Actualizar ahora"
 4. Reinicia tu dispositivo y vuelve a intentarlo
-5. Si el problema persiste, consulta nuestra [guía de solución de problemas](../troubleshooting/update-issues.md)
+5. Si el problema persiste, consulta nuestra [guía de solución de problemas](./updates.md#solución-de-problemas)
 
 ## Cuarentena y Amenazas
 
@@ -364,4 +366,4 @@ Para solicitar soporte remoto, contacta a nuestro equipo a través de cualquier 
 
 ---
 
-¿No encontraste respuesta a tu pregunta? Contacta con nuestro [equipo de soporte](../support/contact.md) para obtener asistencia personalizada. 
+¿No encontraste respuesta a tu pregunta? Contacta con nuestro [equipo de soporte](../support/contact.md) para obtener asistencia personalizada.

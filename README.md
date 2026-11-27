@@ -13,8 +13,7 @@ Analogy: Coils around and neutralizes threats.
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 ![Windows 11 Support](https://img.shields.io/badge/Windows-11-0078D4?logo=windows)
-![Build Status](https://img.shields.io/github/workflow/status/CripterHack/Amaru/CI)
-![Version](https://img.shields.io/github/v/release/CripterHack/Amaru)
+[![Validation](https://github.com/CripterHack/Amaru/actions/workflows/validation.yml/badge.svg)](https://github.com/CripterHack/Amaru/actions/workflows/validation.yml)
 
 ---
 
@@ -30,6 +29,9 @@ Designed for users who value transparency, customization, and Windows 11 compati
 ---
 
 ## ✨ Key Features
+
+These features define the Windows 11 product scope. Implementation and validation progress vary by component. See the [development status](status_development.md).
+
 | **Feature**               | **Technology**          | **Description**                                      |
 |--------------------------|-------------------------|---------------------------------------------------|
 | Real-Time File Monitoring | `notify-rs` + ClamAV    | Watches file changes and scans instantly            |
@@ -57,7 +59,7 @@ Designed for users who value transparency, customization, and Windows 11 compati
 - Admin privileges
 
 ### Developer Requirements
-- Rust toolchain (1.70 or later)
+- Rust MSVC toolchain with support for Cargo lockfile format 4
 - Node.js 18 or later (for UI development)
 - Visual Studio Build Tools with C++ workload
 - Git for Windows
@@ -66,23 +68,14 @@ Designed for users who value transparency, customization, and Windows 11 compati
 
 ## 📥 Installation
 
-### End User Installation
-1. Download the latest release from the [Releases page](https://github.com/CripterHack/Amaru/releases).
-2. Run the installer with administrator privileges.
-3. Follow the on-screen instructions to complete the installation.
+### Release availability
 
-### Manual Installation
-1. Install the required dependencies (YARA 4.3+ and Radare2).
-2. Download the pre-built binary package.
-3. Extract to your desired location.
-4. Run `amaru-setup.exe` to configure the service components.
+As of 2026-11-27 the project has no published GitHub release. The source tree includes an installer and a packaged executable from earlier development. Their provenance and behavior on Windows 11 still need validation before distribution. Check the [Releases page](https://github.com/CripterHack/Amaru/releases) for versioned downloads.
 
 ### Developer Installation
 1. **Install Rust:**
    ```powershell
    winget install Rustlang.Rust.MSVC
-   rustup toolchain install nightly
-   rustup default nightly
    ```
 
 2. **Install Dependencies:**
@@ -97,31 +90,25 @@ Designed for users who value transparency, customization, and Windows 11 compati
    winget install OpenJS.NodeJS.LTS
    ```
 
-3. **Clone and Build:**
+3. **Clone the project and check the build on Windows 11.** The workspace and GUI use separate build commands. A successful build of the complete Windows application is pending.
    ```powershell
    git clone https://github.com/CripterHack/Amaru.git
    cd Amaru
    
    # Build backend
-   cargo build --release
+   cargo build --locked --release
    
    # Build GUI
    cd gui
-   npm install
+   npm ci
    npm run build
    
-   # Build complete package
    cd ..
-   cargo run --bin amaru-packager
    ```
 
-4. **Configure:**
-   ```powershell
-   copy .env.example .env
-   # Edit .env with your settings
-   ```
+4. **Review the configuration.** The core reads the repository's [config.toml](config.toml) by default.
 
-5. **Run Examples:**
+5. **Run the examples once the backend builds.**
    ```powershell
    # Run the EICAR test file detection example
    cargo run --example eicar_detection
@@ -135,13 +122,14 @@ Designed for users who value transparency, customization, and Windows 11 compati
 ## 🚀 Usage
 
 ### GUI Interface
-The most user-friendly way to interact with Amaru is through its graphical interface:
+The intended desktop workflow on Windows 11 has three steps.
+
 1. Launch Amaru from the Start menu or desktop shortcut.
 2. Use the dashboard to view protection status and recent events.
 3. Schedule scans and configure protection settings through the Settings page.
 
 ### Command Line Interface
-Amaru provides a powerful command-line interface for advanced users and automation:
+The CLI declares the following interfaces for scanning and service management. Dispatch from the application entry point is pending. These examples document the intended syntax. See [src/main.rs](src/main.rs).
 
 ```powershell
 # Scan a specific file
@@ -159,15 +147,14 @@ amaru update --rules
 # Analyze a suspicious file with detailed reporting
 amaru analyze --file C:\suspicious\file.exe --radare2 --heuristic
 
-# Test detection capabilities with EICAR test file
-amaru test-eicar
-
 # Check service status
 amaru service --action status
 ```
 
+The planned `amaru test-eicar` command still needs CLI integration. The existing [EICAR example](examples/eicar_detection.rs) and [corpus specification](docs/technical/eicar-corpus.md) describe the detection checks.
+
 ### Windows Service
-Amaru runs as a Windows service for real-time protection:
+The service interface specifies the following administrator commands. Installation, startup and status reporting still require end-to-end verification on Windows 11.
 
 ```powershell
 # Install the service (admin privileges required)
@@ -184,7 +171,7 @@ amaru service --action status
 ```
 
 ### Scheduling
-Configure scheduled scans with the built-in scheduler:
+The planned scheduler supports daily and weekly scans. The following examples specify its proposed CLI syntax. The current command parser has no `schedule` subcommand.
 
 ```powershell
 # Schedule a daily scan at 3 AM
@@ -197,6 +184,8 @@ amaru schedule --weekly --day Sunday --time "02:00" --path "C:\"
 ---
 
 ## 🛡️ Security Features
+
+The following protection capabilities describe the design scope. End-to-end validation on Windows 11 is pending.
 
 ### Real-time Protection
 - **File System Monitoring:** Detects and scans files as they're created or modified
@@ -251,10 +240,10 @@ npm run dev
 ### Building from Source
 ```powershell
 # Build release version
-cargo build --release
+cargo build --locked --release
 
-# Build installer
-cargo run --bin amaru-installer-builder
+# Inspect the available workspace targets
+cargo metadata --no-deps --format-version 1
 
 # Run tests
 cargo test --all
@@ -263,16 +252,21 @@ cargo test --all
 cargo doc --open
 ```
 
+The Windows installer has its own NSIS build process and requires a validated application executable. See the [installer instructions](installer/README.md).
+
 ### Testing
+
+For a cross-platform check of the shipped signatures, run the standalone [YARA and YARA-X corpus tests](docs/technical/eicar-corpus.md). Windows integration targets are exercised separately with Cargo.
+
 ```powershell
 # Run unit tests
 cargo test
 
 # Run integration tests
-cargo test --test '*'
+cargo test --workspace --tests
 
 # Run specific test
-cargo test --test scan_test
+cargo test --test amaru_core_tests
 ```
 
 ### Debugging
@@ -302,7 +296,7 @@ This project is licensed under the GNU General Public License v2.0 - see the [LI
 - [Open an issue](https://github.com/CripterHack/Amaru/issues) for bug reports or feature requests
 
 ## 🔄 Contributing
-Contributions are welcome! Please check the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines.
+To propose a change, describe the expected behavior and how you will verify it in a [project issue](https://github.com/CripterHack/Amaru/issues). Include the actual checks and their results in the pull request. See the [contribution guidelines](CONTRIBUTING.md).
 
 ---
 

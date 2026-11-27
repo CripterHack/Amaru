@@ -4,7 +4,15 @@
 
 Amaru Antivirus utiliza una arquitectura modular basada en microservicios, construida principalmente en Rust para el núcleo y JavaScript/TypeScript con Svelte para la interfaz de usuario. Esta arquitectura permite un alto rendimiento, seguridad mejorada y capacidad de ampliación.
 
-![Diagrama de Arquitectura](../assets/images/architecture-diagram.png)
+El manifiesto principal declara estas dependencias locales. El diagrama recoge los paquetes del espacio de trabajo. [Cargo.toml](../../Cargo.toml)
+
+```mermaid
+flowchart LR
+    amaru --> yara-engine
+    amaru --> realtime-monitor
+    amaru --> radare2-analyzer
+    amaru --> updater
+```
 
 ## Componentes Principales
 
@@ -56,7 +64,7 @@ Los componentes se comunican a través de:
 
 ## Modelo de Seguridad
 
-Amaru implementa un modelo de seguridad en capas:
+El diseño especifica las siguientes capas. El [informe de desarrollo](../../status_development.md) identifica los componentes pendientes de validación.
 
 1. **Privilegios mínimos**: Cada componente opera con los mínimos privilegios necesarios
 2. **Aislamiento**: Los componentes críticos se ejecutan en procesos aislados
@@ -74,10 +82,10 @@ La arquitectura permite extensiones mediante:
 
 ## Requisitos de Sistema
 
-- **Sistema Operativo**: Windows 10/11 (64-bit)
+- **Sistema Operativo**: Windows 11 (64-bit)
 - **CPU**: Procesador de 2 núcleos o superior
 - **RAM**: Mínimo 4GB (8GB recomendado)
-- **Espacio en disco**: 500MB para la instalación básica
+- **Espacio en disco**: 1 GB mínimo (2 GB recomendado)
 - **Dependencias**: Radare2, YARA 4.3+
 
 ## Diagrama de Clases
@@ -120,5 +128,5 @@ La arquitectura permite extensiones mediante:
 
 - [Código Fuente en GitHub](https://github.com/CripterHack/Amaru)
 - [Documentación de la API](./api-reference.md)
-- [Guía de Desarrollo](./development-guide.md)
-- [Especificaciones del Sistema](./system-specs.md) 
+- [Desarrollo y requisitos del sistema](../../README.md)
+- [Guía de contribución](../../CONTRIBUTING.md)

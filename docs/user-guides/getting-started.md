@@ -2,6 +2,8 @@
 
 ¡Bienvenido a Amaru Antivirus! Esta guía te ayudará a comenzar a utilizar nuestro software de protección contra malware, explicando la instalación básica, configuración inicial y primeros pasos.
 
+Esta guía describe el flujo de instalación y primer uso previsto para Windows 11. La prueba integral con un instalador publicado sigue pendiente. Consulta el [estado de desarrollo](../../status_development.md).
+
 ## Índice
 
 1. [Requisitos del Sistema](#requisitos-del-sistema)
@@ -16,23 +18,20 @@
 
 Antes de instalar Amaru Antivirus, asegúrate de que tu sistema cumple con los siguientes requisitos:
 
-- **Sistema Operativo**: Windows 10 o Windows 11 (64-bit)
+- **Sistema Operativo**: Windows 11 (64-bit)
 - **Procesador**: 2 GHz dual-core o superior
 - **Memoria**: 4 GB RAM mínimo (8 GB recomendado)
-- **Espacio en Disco**: 500 MB para la instalación
+- **Espacio en Disco**: 1 GB mínimo (2 GB recomendado)
 - **Conexión a Internet**: Requerida para actualizaciones
 - **Resolución de Pantalla**: 1280 x 720 o superior
 
 ## Instalación
 
 1. **Descarga el Instalador**:
-   - Visita [www.amaru-antivirus.com/download](https://www.amaru-antivirus.com/download)
-   - Selecciona la versión más reciente para tu sistema operativo
-   - Descarga el archivo `amaru-installer.exe`
+   - Consulta [GitHub Releases](https://github.com/CripterHack/Amaru/releases). A fecha del 27 de noviembre de 2026 la primera publicación sigue pendiente. Los pasos siguientes describen el flujo previsto para esa distribución.
 
 2. **Ejecuta el Instalador**:
    - Haz clic derecho en el archivo descargado y selecciona "Ejecutar como administrador"
-   - Si aparece una advertencia de Windows Defender, haz clic en "Más información" y luego en "Ejecutar de todos modos"
 
 3. **Sigue el Asistente de Instalación**:
    - Selecciona el idioma de instalación
@@ -47,7 +46,7 @@ Antes de instalar Amaru Antivirus, asegúrate de que tu sistema cumple con los s
    - Haz clic en "Instalar" y espera a que se complete el proceso
    - Cuando finalice, selecciona "Iniciar Amaru Antivirus" y haz clic en "Finalizar"
 
-![Pantalla de instalación](../assets/images/installation-screen.png)
+La captura del asistente queda pendiente de la primera prueba de instalación en Windows 11.
 
 ## Primeros Pasos
 
@@ -84,7 +83,7 @@ Es recomendable realizar un escaneo completo del sistema después de la instalac
    - Si se encuentran amenazas, se recomendarán acciones para cada una
    - Puedes elegir entre cuarentena, eliminación o ignorar para cada archivo
 
-![Pantalla de escaneo](../assets/images/scan-screen.png)
+La captura del resultado queda pendiente de validar el primer escaneo en la aplicación empaquetada.
 
 ## Configurar la Protección en Tiempo Real
 
@@ -163,8 +162,8 @@ Ahora que has configurado Amaru Antivirus, te recomendamos:
 - Configurar el escaneo programado según tus necesidades
 - Familiarizarte con la sección de Cuarentena para gestionar amenazas
 
-Si necesitas ayuda adicional, consulta nuestra [documentación completa](../index.md) o ponte en contacto con nuestro [soporte técnico](../support/contact.md).
+Si necesitas ayuda adicional, consulta nuestra [documentación completa](../README.md) o ponte en contacto con nuestro [soporte técnico](../support/contact.md).
 
 ---
 
-¿Esta guía te resultó útil? [Envíanos tus comentarios](mailto:feedback@amaru-antivirus.com) para ayudarnos a mejorarla. 
+¿Esta guía te resultó útil? [Envíanos tus comentarios](mailto:feedback@amaru-antivirus.com) para ayudarnos a mejorarla.

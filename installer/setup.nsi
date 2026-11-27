@@ -1,4 +1,7 @@
 ; Script mejorado para Amaru Antivirus con soporte para caracteres acentuados
+!ifndef EXEDIR
+  !error "This legacy script requires the Cargo release directory. Use scripts/package.ps1."
+!endif
 Unicode true
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
@@ -137,7 +140,7 @@ FunctionEnd
 
 Section "Instalación"
   SetOutPath "$INSTDIR"
-  File "amaru.exe"
+  File "${EXEDIR}\amaru.exe"
   
   ; Crear directorios usando SetOutPath, que es más seguro
   SetOutPath "$INSTDIR\config"

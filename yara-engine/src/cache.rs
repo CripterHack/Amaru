@@ -43,7 +43,11 @@ impl RuleCache {
     
     pub async fn save(&self) -> Result<(), std::io::Error> {
         let metadata = self.metadata.read().await;
-        let content = serde_json::to_string_pretty(&*metadata)?;
+        self.persist(&metadata)
+    }
+
+    fn persist(&self, metadata: &HashMap<String, RuleMetadata>) -> Result<(), std::io::Error> {
+        let content = serde_json::to_string_pretty(metadata)?;
         fs::write(&self.cache_file, content)?;
         Ok(())
     }
@@ -81,7 +85,7 @@ impl RuleCache {
             }
         );
         
-        self.save().await?;
+        self.persist(&metadata)?;
         Ok(())
     }
     
@@ -101,7 +105,7 @@ impl RuleCache {
         let mut metadata = self.metadata.write().await;
         if let Some(meta) = metadata.get_mut(path.to_str().unwrap_or_default()) {
             meta.enabled = false;
-            self.save().await?;
+            self.persist(&metadata)?;
         }
         Ok(())
     }
@@ -121,7 +125,7 @@ impl RuleCache {
         
         let removed = before_len - metadata.len();
         if removed > 0 {
-            self.save().await?;
+            self.persist(&metadata)?;
         }
         
         Ok(removed)

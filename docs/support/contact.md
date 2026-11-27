@@ -2,6 +2,8 @@
 
 Nuestro equipo de soporte está disponible para ayudarte con cualquier consulta o problema que puedas tener con Amaru Antivirus. A continuación, encontrarás todas las formas de contactarnos y recursos adicionales para resolver tus dudas.
 
+El canal público del repositorio para consultas de desarrollo es [GitHub Issues](https://github.com/CripterHack/Amaru/issues). Los servicios comerciales, contactos externos y plazos de este documento están pendientes de confirmación.
+
 ## Índice
 
 1. [Opciones de Contacto](#opciones-de-contacto)
@@ -133,11 +135,11 @@ Nuestro servicio de soporte puede tener horarios reducidos durante festividades 
 
 Nuestra extensa base de conocimientos contiene cientos de artículos, tutoriales y guías para ayudarte a resolver problemas comunes:
 
-- [Guías de instalación y configuración](../user-guides/installation.md)
-- [Resolución de problemas comunes](../troubleshooting/common-issues.md)
-- [Optimización del rendimiento](../user-guides/performance.md)
+- [Guías de instalación y configuración](../user-guides/getting-started.md#instalación)
+- [Resolución de problemas comunes](../user-guides/getting-started.md#solución-de-problemas-comunes)
+- [Optimización del rendimiento](../user-guides/faq.md#rendimiento)
 - [Tutoriales en video](https://www.amaru-antivirus.com/video-tutorials)
-- [Glosario de seguridad](../resources/glossary.md)
+- Glosario de seguridad (pendiente de publicación)
 
 ### Búsqueda en la Base de Conocimientos
 
@@ -233,4 +235,4 @@ Recompensamos a los investigadores que descubren y reportan responsablemente vul
 
 ---
 
-Si no encuentras la información que necesitas, no dudes en contactarnos utilizando cualquiera de los métodos mencionados anteriormente. Tu seguridad es nuestra prioridad y estamos aquí para ayudarte. 
+Si no encuentras la información que necesitas, no dudes en contactarnos utilizando cualquiera de los métodos mencionados anteriormente. Tu seguridad es nuestra prioridad y estamos aquí para ayudarte.

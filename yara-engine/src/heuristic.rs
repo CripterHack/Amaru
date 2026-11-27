@@ -108,7 +108,7 @@ struct HeuristicPattern {
 #[derive(Debug, Clone)]
 enum PatternType {
     ByteSequence(Vec<u8>),
-    Regex(regex::Regex),
+    Regex(regex::bytes::Regex),
     EntropyCheck { min: f64, max: f64 },
     PeHeader(PeHeaderCheck),
     ApiUsage(Vec<String>),
@@ -126,6 +126,7 @@ enum PeHeaderCheck {
 }
 
 /// Implementación del motor de análisis heurístico
+#[derive(Clone)]
 pub struct HeuristicEngine {
     config: HeuristicConfig,
     patterns: Vec<HeuristicPattern>,
@@ -185,21 +186,15 @@ impl HeuristicEngine {
                     }
                 }
                 PatternType::Regex(re) => {
-                    // Convertir el buffer a texto para análisis de regex
-                    if let Ok(text) = String::from_utf8(buffer.clone()) {
-                        let locations: Vec<usize> = re.find_iter(&text)
-                            .map(|m| m.start())
-                            .collect();
-                            
-                        if !locations.is_empty() {
-                            score += pattern.weight;
-                            matches.push(PatternMatch {
-                                pattern_name: pattern.name.clone(),
-                                description: pattern.description.clone(),
-                                weight: pattern.weight,
-                                locations,
-                            });
-                        }
+                    let locations: Vec<_> = re.find_iter(&buffer).map(|m| m.start()).collect();
+                    if !locations.is_empty() {
+                        score += pattern.weight;
+                        matches.push(PatternMatch {
+                            pattern_name: pattern.name.clone(),
+                            description: pattern.description.clone(),
+                            weight: pattern.weight,
+                            locations,
+                        });
                     }
                 }
                 PatternType::EntropyCheck { min, max } => {
@@ -368,7 +363,7 @@ impl HeuristicEngine {
             description: "Patrones de cifrado de archivos".to_string(),
         });
         
-        if let Ok(re) = regex::Regex::new(r"\.encrypted$|\.locked$|\.crypt$|DECRYPT|RANSOM") {
+        if let Ok(re) = regex::bytes::Regex::new(r"\.encrypted$|\.locked$|\.crypt$|DECRYPT|RANSOM") {
             patterns.push(HeuristicPattern {
                 name: "ransomware_extension".to_string(),
                 pattern_type: PatternType::Regex(re),
@@ -394,7 +389,7 @@ impl HeuristicEngine {
         });
         
         // Patrones de spyware
-        if let Ok(re) = regex::Regex::new(r"GetClipboardData|GetKeyboardState|GetAsyncKeyState") {
+        if let Ok(re) = regex::bytes::Regex::new(r"GetClipboardData|GetKeyboardState|GetAsyncKeyState") {
             patterns.push(HeuristicPattern {
                 name: "spyware_keyboard_monitoring".to_string(),
                 pattern_type: PatternType::Regex(re),
@@ -441,7 +436,7 @@ impl HeuristicEngine {
             .par_iter()
             .filter_map(|path| {
                 match self.analyze_file(path) {
-                    Ok(result) if result.score >= self.config.min_detection_score => Some(Ok(result)),
+                    Ok(result) if result.score >= self.config.min_detection_score => Some(result),
                     Ok(_) => None, // Ignorar resultados por debajo del umbral
                     Err(e) => {
                         warn!("Error en análisis heurístico de {}: {}", path.display(), e);
@@ -449,7 +444,7 @@ impl HeuristicEngine {
                     }
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect();
             
         let duration = start.elapsed().as_secs_f64();
         info!("Análisis heurístico recursivo completado en {:.2}s. Encontradas {} amenazas potenciales", 
@@ -485,7 +480,7 @@ mod tests {
         
         let positions = HeuristicEngine::find_byte_pattern(data, pattern);
         assert_eq!(positions.len(), 1, "Debería encontrar exactamente una coincidencia");
-        assert_eq!(positions[0], 15, "La coincidencia debería estar en la posición 15");
+        assert_eq!(positions[0], b"This is a test with ".len());
     }
     
     #[test]

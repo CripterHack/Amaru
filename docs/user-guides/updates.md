@@ -2,6 +2,8 @@
 
 Mantener tu antivirus actualizado es crucial para protegerte contra las amenazas más recientes. Esta guía explica cómo funciona el sistema de actualizaciones de Amaru Antivirus y cómo sacarle el máximo provecho.
 
+Esta guía describe el comportamiento previsto del actualizador. La validación de los canales de distribución, los paquetes y su instalación figura en el [informe de desarrollo](../../status_development.md).
+
 ## Índice
 
 1. [Importancia de las Actualizaciones](#importancia-de-las-actualizaciones)
@@ -247,4 +249,4 @@ Las actualizaciones estándar no modifican tu configuración. Sin embargo, las a
 
 ---
 
-Para más información sobre actualizaciones o problemas específicos, consulta nuestra [documentación técnica](../technical/updates-system.md) o contacta con nuestro [equipo de soporte](../support/contact.md). 
+Para más información sobre actualizaciones o problemas específicos, consulta nuestra [implementación del actualizador](../../updater/src/lib.rs) o contacta con nuestro [equipo de soporte](../support/contact.md).

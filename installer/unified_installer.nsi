@@ -24,7 +24,7 @@ Unicode true
 !endif
 
 !ifndef EXEDIR
-  !define EXEDIR "."
+  !error "EXEDIR must reference the Cargo release output. Use scripts/package.ps1."
 !endif
 
 ; Configuración del instalador
@@ -53,8 +53,8 @@ Var PreviousIsX86
 !define MUI_FINISHPAGE_RUN_TEXT "Iniciar Amaru Antivirus ahora"
 
 ; Usar iconos personalizados si están disponibles
-!define MUI_ICON "${EXEDIR}\amaru-app.ico"
-!define MUI_UNICON "${EXEDIR}\amaru-app.ico"
+!define MUI_ICON "amaru-app.ico"
+!define MUI_UNICON "amaru-app.ico"
 !define MUI_HEADERIMAGE
 !define MUI_HEADERIMAGE_BITMAP "${NSISDIR}\Contrib\Graphics\Header\win.bmp"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "${NSISDIR}\Contrib\Graphics\Wizard\win.bmp"
@@ -75,6 +75,10 @@ Var PreviousIsX86
 
 ; Función de inicialización
 Function .onInit
+  ${IfNot} ${RunningX64}
+    MessageBox MB_OK|MB_ICONSTOP "Este instalador requiere Windows de 64 bits."
+    Abort
+  ${EndIf}
   ; Asegurar que no haya múltiples instancias del instalador
   System::Call 'kernel32::CreateMutexA(i 0, i 0, t "AmaruAntivirusInstaller") i .r1 ?e'
   Pop $R0
@@ -104,8 +108,8 @@ Function .onInit
         Sleep 2000
       ${EndIf}
       
-      ; Eliminar directorios y archivos manualmente por si acaso
-      RMDir /r "$PreviousInstallDir"
+      ; El desinstalador anterior es responsable de sus propios archivos.
+      RMDir "$PreviousInstallDir"
       
       ; Limpiar registros
       DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
@@ -134,8 +138,8 @@ Function .onInit
         Sleep 2000
       ${EndIf}
       
-      ; Eliminar directorios y archivos manualmente por si acaso
-      RMDir /r "$PreviousInstallDir"
+      ; El desinstalador anterior es responsable de sus propios archivos.
+      RMDir "$PreviousInstallDir"
       
       ; Limpiar registros
       DeleteRegKey HKLM "Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
@@ -159,8 +163,7 @@ Function .onInit
       ; Esperar a que termine la desinstalación
       Sleep 2000
       
-      ; Eliminar directorios y archivos manualmente
-      RMDir /r "$PreviousInstallDir"
+      RMDir "$PreviousInstallDir"
       
     skip_driveD:
   ${EndIf}
@@ -169,32 +172,22 @@ Function .onInit
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
   DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
   
-  ; Detectar arquitectura del sistema y ajustar ruta si es necesario
-  ${If} ${RunningX64}
-    ; En 64 bits, usar la ruta estándar
-    StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCT_NAME}"
-  ${Else}
-    ; En 32 bits, usar Program Files (x86)
-    StrCpy $INSTDIR "$PROGRAMFILES32\${PRODUCT_NAME}"
-  ${EndIf}
+  StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCT_NAME}"
 FunctionEnd
 
 ; Sección principal de instalación
 Section "Instalación" SEC_MAIN
   SetOutPath "$INSTDIR"
   File "${EXEDIR}\amaru.exe"
+  File "..\config.toml"
   
   ; Crear estructura de directorios usando SetOutPath, que es más seguro
   SetOutPath "$INSTDIR\config"
   SetOutPath "$INSTDIR\signatures"
+  File /r "..\signatures\*"
   SetOutPath "$INSTDIR\modules"
   SetOutPath "$INSTDIR\logs"
   SetOutPath "$INSTDIR\quarantine"
-  
-  ; Crear archivo .env con rutas correctas si viene de installer.nsi
-  ${If} ${FileExists} "${EXEDIR}\config.toml"
-    File /oname=$INSTDIR\config.toml "${EXEDIR}\config.toml"
-  ${EndIf}
   
   ; Configuración de ambiente si es necesario
   FileOpen $0 "$INSTDIR\.env" w
@@ -271,13 +264,15 @@ Section "Uninstall"
   
   ; Eliminar datos persistentes usando la variable de sistema adecuada
   ${If} ${RunningX64}
-    RMDir /r "$PROGRAMDATA\${PRODUCT_NAME}"
+    SetShellVarContext all
+    RMDir /r "$APPDATA\${PRODUCT_NAME}"
+    SetShellVarContext current
   ${Else}
     RMDir /r "$APPDATA\${PRODUCT_NAME}"
   ${EndIf}
   
   ; Limpiar el directorio principal
-  RMDir /r "$INSTDIR"
+  RMDir "$INSTDIR"
   
   ; Limpiar registros completamente
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"

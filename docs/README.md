@@ -2,7 +2,7 @@
 
 ## Estructura de la documentación
 
-Esta carpeta contiene toda la documentación oficial de Amaru Antivirus, organizada en las siguientes secciones:
+Las guías describen el alcance previsto para Windows 11. Amaru es experimental. Consulta qué componentes se han probado, qué falta por integrar y qué validación queda pendiente en el [informe de desarrollo](../status_development.md).
 
 - **[Documentación Técnica](./technical/)**: Información para desarrolladores y administradores de sistemas.
 - **[Guías de Usuario](./user-guides/)**: Manuales y tutoriales para usuarios finales.
@@ -40,8 +40,8 @@ La sección de soporte técnico ayuda a los usuarios a resolver problemas y acce
 
 ## Contribuciones a la documentación
 
-Si deseas contribuir a la mejora de esta documentación, por favor consulta las [guías de contribución](../CONTRIBUTING.md) del proyecto.
+Las contribuciones pueden incluir correcciones, ejemplos reproducibles y resultados de pruebas. Consulta las [indicaciones para contribuir](../CONTRIBUTING.md).
 
 ---
 
-Para obtener más información o asistencia, visita [www.amaru-antivirus.com](https://www.amaru-antivirus.com) o contacta a nuestro equipo de soporte en support@amaru-antivirus.com. 
+Para obtener más información o asistencia, visita [www.amaru-antivirus.com](https://www.amaru-antivirus.com) o contacta a nuestro equipo de soporte en support@amaru-antivirus.com.

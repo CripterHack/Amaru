@@ -1,95 +1,32 @@
-# Instalador Amaru Antivirus
+# Instalador de desarrollo de Amaru para Windows
 
-Este directorio contiene todos los archivos necesarios para generar el instalador de Amaru Antivirus para Windows.
+El instalador NSIS empaqueta el ejecutable Rust x64, la configuración del repositorio y el árbol de firmas YARA. Los binarios históricos del directorio `installer/` son anteriores a este procedimiento. La validación del servicio, del escritorio Tauri y de las dependencias nativas en Windows 11 sigue pendiente. El estado de publicación se registra en el [informe de desarrollo](../status_development.md).
 
-## Estructura de archivos
+## Requisitos
 
-- `unified_installer.nsi`: Script NSIS principal que define la estructura del instalador
-- `amaru-app.ico`: Icono de la aplicación usado en el instalador
-- `license.txt`: Archivo de licencia mostrado durante la instalación
-- `AmaruAV-Setup.exe`: Instalador generado (después de la compilación)
+Se requiere un entorno Windows de desarrollo con PowerShell 5.1 o superior, Rust para `x86_64-pc-windows-msvc`, Visual Studio Build Tools, las dependencias nativas del proyecto y NSIS 3. El script busca `makensis.exe` en el PATH y en la carpeta NSIS de Program Files (x86).
 
-## Requisitos previos
+## Construcción y verificación
 
-Para compilar el instalador, necesitarás:
-
-1. [NSIS (Nullsoft Scriptable Install System)](https://nsis.sourceforge.io/Download) versión 3.0 o superior
-2. El archivo ejecutable de Amaru Antivirus (`amaru.exe`)
-3. PowerShell 5.1 o superior
-
-## Cómo compilar el instalador
-
-Existen varias formas de compilar el instalador:
-
-### Método 1: Usando el script de verificación y compilación
+Desde la raíz del repositorio, compila y empaqueta el ejecutable del checkout actual con este comando.
 
 ```powershell
-# Desde el directorio raíz del proyecto
-.\scripts\build_installer.ps1
+.\scripts\build_installer.ps1 -Force
 ```
 
-Este script:
-- Verifica que todos los componentes necesarios estén disponibles
-- Comprueba la sintaxis del script NSIS
-- Genera el instalador si todas las verificaciones son correctas
+El script ejecuta Cargo con `--locked`, comprueba la cabecera PE x64 y compila [unified_installer.nsi](unified_installer.nsi) en un directorio temporal. Solo al concluir NSIS mueve el nuevo instalador a `target\x86_64-pc-windows-msvc\release\AmaruAV-Setup.exe`. Un fallo de compilación termina el comando con error. La ruta de salida puede seguir conteniendo el resultado de una compilación anterior.
 
-### Método 2: Usando NSIS directamente
+Para verificar el empaquetado de un ejecutable previamente compilado, ejecuta ambos comandos y comprueba que cada uno termine correctamente.
 
 ```powershell
-# Desde el directorio raíz del proyecto
-& "C:\Program Files (x86)\NSIS\makensis.exe" /V4 /DOUTDIR=".\installer" /DLICENSEFILE=".\installer\license.txt" /DEXEDIR=".\installer" ".\installer\unified_installer.nsi"
+cargo build --locked --release --package amaru --bin amaru --target x86_64-pc-windows-msvc --target-dir target
+.\scripts\build_installer.ps1 -VerifyOnly
 ```
 
-## Parámetros configurables
+La verificación descarta el instalador temporal. Una compilación real del proyecto y una prueba de instalación, arranque, detección y desinstalación en Windows 11 siguen siendo necesarias para validar una versión distribuible.
 
-El script `unified_installer.nsi` acepta los siguientes parámetros:
+## Estructura
 
-- `OUTDIR`: Directorio de salida para el instalador
-- `LICENSEFILE`: Ruta al archivo de licencia
-- `EXEDIR`: Directorio donde se encuentra el ejecutable
-
-## Mantenimiento
-
-Para mantener el instalador:
-
-1. Todas las actualizaciones deben hacerse en `unified_installer.nsi`
-2. Los scripts obsoletos se han eliminado o respaldado usando `.\scripts\cleanup_legacy.ps1`
-3. La configuración de versión se establece mediante el parámetro `PRODUCT_VERSION` en el script principal
-
-## Solución de problemas
-
-Si encuentras problemas al compilar el instalador:
-
-1. Verifica que NSIS esté correctamente instalado
-2. Asegúrate de que todos los archivos necesarios estén presentes
-3. Ejecuta el script de verificación: `.\scripts\build_installer.ps1 -VerifyOnly`
-
-## Estructura del instalador generado
-
-El instalador creado:
-
-1. Detecta instalaciones previas y ofrece desinstalarlas
-2. Instala Amaru Antivirus en Program Files (x64 o x86 según arquitectura)
-3. Crea atajos en el menú inicio y escritorio
-4. Registra la aplicación para inicio automático
-5. Proporciona un desinstalador completo
-
-## Mejores prácticas
-
-- Mantén un único script NSIS principal (`unified_installer.nsi`)
-- Utiliza el script de compilación para verificar la integridad
-- Actualiza la versión en el script principal antes de compilar
-
-El instalador creado:
-
-1. Detecta instalaciones previas y ofrece desinstalarlas
-2. Instala Amaru Antivirus en Program Files (x64 o x86 según arquitectura)
-3. Crea atajos en el menú inicio y escritorio
-4. Registra la aplicación para inicio automático
-5. Proporciona un desinstalador completo
-
-## Mejores prácticas
-
-- Mantén un único script NSIS principal (`unified_installer.nsi`)
-- Utiliza el script de compilación para verificar la integridad
-- Actualiza la versión en el script principal antes de compilar 
+- [scripts/package.ps1](../scripts/package.ps1) implementa la compilación y la verificación utilizadas por los puntos de entrada.
+- [unified_installer.nsi](unified_installer.nsi) define el empaquetado, los accesos directos, el inicio automático y la desinstalación.
+- [license.txt](license.txt) y [amaru-app.ico](amaru-app.ico) son los recursos que NSIS utiliza al compilar el instalador.

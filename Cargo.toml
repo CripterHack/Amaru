@@ -7,6 +7,7 @@ description = "Antivirus moderno con análisis heurístico avanzado"
 license = "GPL-2.0"
 
 [workspace]
+exclude = ["gui/src-tauri"]
 members = [
     "yara-engine",
     "realtime-monitor",

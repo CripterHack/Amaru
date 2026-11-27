@@ -353,4 +353,4 @@ En ocasiones, Amaru puede identificar erróneamente archivos legítimos como ame
 
 ---
 
-Para más información sobre el sistema de análisis, consulta nuestra [documentación técnica](../technical/scanning-engine.md) o contacta con nuestro [equipo de soporte](../support/contact.md) si tienes preguntas específicas. 
+Para más información sobre el sistema de análisis, consulta nuestra [documentación del motor de detección](../technical/detection-engine.md) o contacta con nuestro [equipo de soporte](../support/contact.md) si tienes preguntas específicas.

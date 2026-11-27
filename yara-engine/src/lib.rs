@@ -1,20 +1,13 @@
 use log::{debug, error, info, warn};
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use thiserror::Error;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::Arc;
 use std::fs;
-use yara::{Compiler, Rules, ScanFlags};
-use std::convert::TryFrom;
+use yara::{Compiler, MetadataValue, Rules};
 use walkdir::WalkDir;
-use tokio::task;
-use dashmap::DashMap;
 use rayon::prelude::*;
 use serde::{Serialize, Deserialize};
-use md5::{Md5, Digest};
 
 // Módulos internos
 pub mod cache;
@@ -111,66 +104,80 @@ pub struct RuleMetadata {
     pub last_modified: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug)]
-struct CachedRule {
-    rules: Rules,
-    metadata: RuleMetadata,
-}
-
-/// YARA engine implementation using the yara crate
+/// Loaded rules and metadata are replaced together after a successful reload.
+#[derive(Clone)]
 pub struct YaraEngine {
     config: YaraConfig,
     rules: Arc<Rules>,
-    rule_cache: Arc<DashMap<String, CachedRule>>,
+    metadata: HashMap<String, RuleMetadata>,
     rules_dir: PathBuf,
 }
 
 impl YaraEngine {
-    /// Create a new YARA engine with the given configuration
     pub fn new(rules_dir: impl Into<PathBuf>) -> Result<Self, YaraError> {
         let rules_dir = rules_dir.into();
-        let mut compiler = Compiler::new()?;
-        let rule_cache = Arc::new(DashMap::new());
-        
-        // Cargar y compilar reglas con metadatos
-        for entry in std::fs::read_dir(&rules_dir)? {
-            let entry = entry?;
+        let mut compiler = Compiler::new().map_err(|e| YaraError::InitError(e.to_string()))?;
+        let mut metadata = HashMap::new();
+        for entry in WalkDir::new(&rules_dir).sort_by_file_name() {
+            let entry = entry.map_err(std::io::Error::from)?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "yar") {
-                let content = std::fs::read_to_string(&path)?;
-                
-                // Calcular hash MD5 del contenido
-                let mut hasher = Md5::new();
-                hasher.update(&content);
-                let md5 = format!("{:x}", hasher.finalize());
-                
-                // Extraer metadatos de la regla
-                let metadata = Self::extract_rule_metadata(&content, &md5)?;
-                
-                // Compilar regla
-                compiler.add_rules_str(&content)
-                    .map_err(|e| YaraError::CompileError(e.to_string()))?;
-                    
-                // Almacenar en caché
-                if let Ok(rules) = compiler.compile_rules() {
-                    rule_cache.insert(
-                        path.file_name().unwrap().to_string_lossy().to_string(),
-                        CachedRule { rules, metadata }
-                    );
-                }
+            if !entry.file_type().is_file()
+                || !matches!(path.extension().and_then(|s| s.to_str()), Some("yar" | "yara"))
+            {
+                continue;
+            }
+            let name = path.strip_prefix(&rules_dir).expect("entry under rules directory")
+                .to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+            let content = fs::read_to_string(path)?;
+            let digest = format!("{:x}", md5::compute(&content));
+            compiler = compiler.add_rules_str_with_namespace(&content, &name)
+                .map_err(|e| YaraError::CompileError(format!("{}: {}", path.display(), e)))?;
+            metadata.insert(name, Self::extract_rule_metadata(&content, &digest)?);
+        }
+        let rules = compiler.compile_rules().map_err(|e| YaraError::CompileError(e.to_string()))?;
+        Ok(Self { config: YaraConfig::default(), rules: Arc::new(rules), metadata, rules_dir })
+    }
+
+    fn timeout_seconds(&self) -> i32 {
+        self.config.timeout_ms.div_ceil(1000).min(i32::MAX as u64) as i32
+    }
+
+    fn collect_matches(&self, mut matches: Vec<yara::Rule<'_>>) -> Vec<RuleMatch> {
+        if let Some(excluded) = &self.config.excluded_namespaces {
+            matches.retain(|rule| !excluded.iter().any(|prefix| rule.namespace.starts_with(prefix)));
+        }
+        matches.sort_by_key(|rule| std::cmp::Reverse(self.metadata[rule.namespace].priority));
+        if self.config.fast_scan {
+            if let Some(first_namespace) = matches.first().map(|rule| rule.namespace) {
+                matches.retain(|rule| rule.namespace == first_namespace);
             }
         }
-
-        let rules = compiler.compile_rules()?;
-        
-        Ok(Self {
-            config: YaraConfig::default(),
-            rules: Arc::new(rules),
-            rule_cache,
-            rules_dir,
-        })
+        matches.into_iter().map(|rule| {
+            let strings = rule.strings.into_iter().flat_map(|string| {
+                let identifier = string.identifier;
+                string.matches.into_iter().map(move |occurrence| MatchString {
+                    identifier: identifier.to_owned(),
+                    offset: occurrence.base as u64 + occurrence.offset as u64,
+                    data: occurrence.data,
+                })
+            }).take(self.config.max_strings_per_rule).collect();
+            let meta = rule.metadatas.into_iter().map(|entry| {
+                let value = match entry.value {
+                    MetadataValue::Integer(n) => n.into(),
+                    MetadataValue::String(s) => s.into(),
+                    MetadataValue::Boolean(b) => b.into(),
+                };
+                (entry.identifier.to_owned(), value)
+            }).collect::<serde_json::Map<_, _>>();
+            RuleMatch {
+                rule_name: rule.identifier.to_owned(),
+                tags: rule.tags.into_iter().map(str::to_owned).collect(),
+                meta: meta.into(),
+                strings,
+            }
+        }).collect()
     }
-    
+
     /// Scan a file with YARA rules
     ///
     /// Performs a scan of the target file with all loaded YARA rules,
@@ -221,117 +228,9 @@ impl YaraEngine {
             });
         }
         
-        // Check if file is accessible
-        if let Err(e) = File::open(path) {
-            return Err(YaraError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Cannot open file for scanning: {}: {}", path.display(), e)
-            )));
-        }
-        
-        // Get prioritized rules for scanning
-        let prioritized_rules: Vec<_> = self.rule_cache
-            .iter()
-            .collect();
-        
-        // Sort rules by priority (high to low)
-        let mut prioritized_rules = prioritized_rules;
-        prioritized_rules.sort_by(|a, b| {
-            b.value().metadata.priority.cmp(&a.value().metadata.priority)
-        });
-        
-        debug!(
-            "Scanning file {} with {} prioritized rule sets",
-            path.display(),
-            prioritized_rules.len()
-        );
-        
-        // Track all matches across rule sets
-        let mut all_matches = Vec::new();
-        
-        // Set up scan flags and apply timeout if configured
-        let mut scan_flags = ScanFlags::empty();
-        
-        // Apply timeout if configured
-        if self.config.timeout_ms > 0 {
-            scan_flags |= ScanFlags::TIMEOUT;
-        }
-        
-        // Apply process memory scanning if needed
-        if self.config.scan_process_memory {
-            scan_flags |= ScanFlags::PROCESS_MEMORY;
-        }
-        
-        // Scan with fast rules first to fail fast
-        for cached_rule in prioritized_rules {
-            // Get rule name for logging
-            let rule_name = cached_rule.key();
-            let rule_start = std::time::Instant::now();
-            
-            // Skip rules with namespace exclusions if applicable
-            if let Some(excluded_namespaces) = &self.config.excluded_namespaces {
-                if excluded_namespaces.iter().any(|ns| rule_name.starts_with(ns)) {
-                    debug!("Skipping excluded rule namespace: {}", rule_name);
-                    continue;
-                }
-            }
-            
-            // Apply the rule to the target file
-            match cached_rule.value().rules.scan_file(path, scan_flags) {
-                Ok(matches) => {
-                    // Process and convert matches to our format
-                    let rule_matches: Vec<_> = matches.into_iter()
-                        .map(|m| RuleMatch {
-                            rule_name: m.identifier.to_string(),
-                            tags: m.tags.iter().map(|t| t.to_string()).collect(),
-                            meta: serde_json::to_value(m.metadatas).unwrap_or_default(),
-                            strings: m.strings
-                                .into_iter()
-                                .take(self.config.max_strings_per_rule)
-                                .map(|s| MatchString {
-                                    identifier: s.identifier.to_string(),
-                                    offset: s.offset,
-                                    data: s.data,
-                                })
-                                .collect(),
-                        })
-                        .collect();
-                    
-                    if !rule_matches.is_empty() {
-                        debug!(
-                            "Rule {} matched {} patterns in {}ms",
-                            rule_name,
-                            rule_matches.len(),
-                            rule_start.elapsed().as_millis()
-                        );
-                        
-                        // Add matches to result
-                        all_matches.extend(rule_matches);
-                        
-                        // Break early if fast scanning mode and we found matches
-                        if self.config.fast_scan && !all_matches.is_empty() {
-                            debug!("Fast scan enabled and matches found, breaking early");
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Log the error but continue with other rules
-                    warn!(
-                        "Error applying rule {} to {}: {}",
-                        rule_name,
-                        path.display(),
-                        e
-                    );
-                    
-                    // Report the error if it's a timeout
-                    if e.to_string().contains("timeout") {
-                        warn!("Rule {} timed out on file {}", rule_name, path.display());
-                    }
-                }
-            }
-        }
-        
+        let matches = self.rules.scan_file(path, self.timeout_seconds())?;
+        let all_matches = self.collect_matches(matches);
+
         // Calculate total scan time
         let scan_time = start.elapsed().as_secs_f64();
         
@@ -350,26 +249,9 @@ impl YaraEngine {
     }
 
     pub fn scan_memory(&self, buffer: &[u8]) -> Result<Vec<RuleMatch>, YaraError> {
-        let matches = self.rules
-            .scan_mem(buffer, ScanFlags::empty())
-            .map_err(|e| YaraError::Scan(e.to_string()))?;
-        
-        Ok(matches
-            .into_iter()
-            .map(|m| RuleMatch {
-                rule_name: m.identifier.to_string(),
-                tags: m.tags.iter().map(|t| t.to_string()).collect(),
-                meta: serde_json::to_value(m.metadatas).unwrap_or_default(),
-                strings: m.strings
-                    .into_iter()
-                    .map(|s| MatchString {
-                        identifier: s.identifier.to_string(),
-                        offset: s.offset,
-                        data: s.data,
-                    })
-                    .collect(),
-            })
-            .collect())
+        let matches = self.rules.scan_mem(buffer, self.timeout_seconds())
+            .map_err(|e| YaraError::ScanError(e.to_string()))?;
+        Ok(self.collect_matches(matches))
     }
 
     pub fn scan_directory(&self, dir: impl AsRef<Path>) -> Result<Vec<ScanResult>, YaraError> {
@@ -420,92 +302,18 @@ impl YaraEngine {
     }
 
     pub fn reload_rules(&mut self) -> Result<(), YaraError> {
-        let mut compiler = Compiler::new()?;
-        
-        for entry in std::fs::read_dir(&self.rules_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "yar") {
-                let content = std::fs::read_to_string(&path)?;
-                compiler.add_rules_str(&content)
-                    .map_err(|e| YaraError::Compilation(e))?;
-            }
-        }
-
-        let rules = compiler.compile_rules()?;
-        self.rules = Arc::new(rules);
-        self.rule_cache.clear();
-        
+        let loaded = Self::new(self.rules_dir.clone())?;
+        self.rules = loaded.rules;
+        self.metadata = loaded.metadata;
         Ok(())
     }
 
     pub fn update_rules(&mut self) -> Result<(), YaraError> {
-        let mut compiler = Compiler::new()?;
-        let mut updated = false;
-        
-        for entry in std::fs::read_dir(&self.rules_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            
-            if path.extension().map_or(false, |ext| ext == "yar") {
-                let content = std::fs::read_to_string(&path)?;
-                
-                // Calcular hash MD5
-                let mut hasher = Md5::new();
-                hasher.update(&content);
-                let md5 = format!("{:x}", hasher.finalize());
-                
-                let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-                
-                // Verificar si la regla ha cambiado
-                if let Some(cached) = self.rule_cache.get(&file_name) {
-                    if cached.value().metadata.md5 != md5 {
-                        // La regla ha cambiado, actualizar
-                        let metadata = Self::extract_rule_metadata(&content, &md5)?;
-                        compiler.add_rules_str(&content)
-                            .map_err(|e| YaraError::CompileError(e.to_string()))?;
-                            
-                        if let Ok(rules) = compiler.compile_rules() {
-                            self.rule_cache.insert(
-                                file_name,
-                                CachedRule { rules, metadata }
-                            );
-                            updated = true;
-                        }
-                    }
-                } else {
-                    // Nueva regla
-                    let metadata = Self::extract_rule_metadata(&content, &md5)?;
-                    compiler.add_rules_str(&content)
-                        .map_err(|e| YaraError::CompileError(e.to_string()))?;
-                        
-                    if let Ok(rules) = compiler.compile_rules() {
-                        self.rule_cache.insert(
-                            file_name,
-                            CachedRule { rules, metadata }
-                        );
-                        updated = true;
-                    }
-                }
-            }
-        }
-        
-        if updated {
-            // Actualizar reglas compiladas
-            self.rules = Arc::new(compiler.compile_rules()?);
-        }
-        
-        Ok(())
+        self.reload_rules()
     }
 
     pub fn get_rule_metadata(&self) -> HashMap<String, RuleMetadata> {
-        self.rule_cache
-            .iter()
-            .map(|entry| (
-                entry.key().clone(),
-                entry.value().metadata.clone()
-            ))
-            .collect()
+        self.metadata.clone()
     }
 
     fn extract_rule_metadata(content: &str, md5: &str) -> Result<RuleMetadata, YaraError> {
@@ -519,7 +327,7 @@ impl YaraEngine {
             1
         };
 
-        let version = if let Some(cap) = regex::Regex::new(r"version\s*=\s*\"([^\"]+)\"")
+        let version = if let Some(cap) = regex::Regex::new(r#"version\s*=\s*"([^"]+)""#)
             .unwrap()
             .captures(content)
         {
@@ -667,27 +475,16 @@ mod tests {
         File::create(&test_file_path).expect("Failed to create test file")
             .write_all(b"This is a test string for priority testing").expect("Failed to write test file");
         
-        // Create YARA engine
-        let engine = YaraEngine::new(temp_dir.path())?;
-        
-        // Add fast scan config to break after first match
-        let mut config = YaraConfig::default();
-        config.fast_scan = true;
-        
-        // TODO: Apply config to engine for test
-        
-        // Scan the test file
+        let mut engine = YaraEngine::new(temp_dir.path())?;
         let result = engine.scan_file(&test_file_path)?;
-        
-        // In fast_scan mode with prioritization, we should see the high priority rule first
-        if result.matches.len() > 1 {
-            assert_eq!(
-                result.matches[0].rule_name, 
-                "HighPriorityRule",
-                "Expected highest priority rule to be first"
-            );
-        }
-        
+        assert_eq!(result.matches.len(), 2);
+        assert_eq!(result.matches[0].rule_name, "HighPriorityRule");
+
+        engine.config.fast_scan = true;
+        let result = engine.scan_file(&test_file_path)?;
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].rule_name, "HighPriorityRule");
+
         Ok(())
     }
 
@@ -715,7 +512,7 @@ mod tests {
             .write_all(rule_content.as_bytes()).expect("Failed to write rule");
         
         // Create YARA engine
-        let engine = YaraEngine::new(temp_dir.path())?;
+        let mut engine = YaraEngine::new(temp_dir.path())?;
         
         // Test scanning non-existent file
         let non_existent_path = temp_dir.path().join("does_not_exist.txt");
@@ -739,16 +536,9 @@ mod tests {
         let large_file_path = temp_dir.path().join("large_file.bin");
         let mut large_file = File::create(&large_file_path).expect("Failed to create large file");
         
-        // Create a YaraEngine with a small file size limit
-        let mut config = YaraConfig::default();
-        config.max_file_size_bytes = Some(100); // 100 bytes limit
-        
-        // TODO: Apply custom config to engine
-        
-        // Write data larger than the limit
-        let data = vec![0u8; 1000]; // 1000 bytes
-        large_file.write_all(&data).expect("Failed to write large file");
-        
+        engine.config.max_file_size_bytes = Some(100);
+        large_file.write_all(&b"test".repeat(250))?;
+
         // Scan the large file - this should not error but return empty results
         let result = engine.scan_file(&large_file_path)?;
         assert!(result.matches.is_empty(), "Expected no matches for size-limited file");

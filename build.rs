@@ -1,22 +1,22 @@
 use std::process::Command;
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::fs::{self, File};
 use std::io::Write;
 
 fn main() {
-    let out_dir = env::var("OUT_DIR").unwrap();
-    let target = env::var("TARGET").unwrap();
-    
-    // Determinar la arquitectura de destino
-    let arch = if target.contains("x86_64") {
-        println!("cargo:rustc-cfg=target_arch=\"x64\"");
-        "x64"
-    } else {
-        println!("cargo:rustc-cfg=target_arch=\"x86\"");
-        "x86"
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let arch = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "x64",
+        Ok("x86") => "x86",
+        _ => {
+            println!("cargo:warning=Installer staging supports x86 and x64 only");
+            return;
+        }
     };
-    
+
     // Generar recursos según arquitectura
     compile_resources(arch);
     

@@ -360,4 +360,4 @@ Si estás seguro de que el programa es seguro:
 
 ---
 
-Para más información sobre la protección en tiempo real, consulta nuestra [documentación técnica](../technical/realtime-engine.md) o contacta con nuestro [equipo de soporte](../support/contact.md) si tienes preguntas específicas. 
+Para más información sobre la protección en tiempo real, consulta nuestra [implementación del monitor](../../realtime-monitor/src/lib.rs) o contacta con nuestro [equipo de soporte](../support/contact.md) si tienes preguntas específicas.
