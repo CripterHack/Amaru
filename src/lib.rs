@@ -40,8 +40,10 @@ pub mod ipc;
 pub mod service;
 // Re-exportar elementos de seguridad
 pub use security::{
-    DigitalSignature, IntegrityManager, SecureLogger, SecurityCheckResult, SecurityError,
-    SecurityManager, TamperProtection,
+    DigitalSignature, FileStatus, ImportanceLevel, IntegrityError, IntegrityManager, IntegrityStatus,
+    SecureLogger, SecureLoggerBackend, SecureLoggingError, SecurityCheckResult, SecurityError,
+    SecurityManager, SensitivityLevel, SignatureError, SignatureInfo, TamperProtection,
+    TamperProtectionError,
 };
 
 // Usar el allocator optimizado

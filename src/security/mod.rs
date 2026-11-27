@@ -14,7 +14,7 @@ pub mod tamper_protection;
 // Re-export key types and errors
 pub use digital_signature::{DigitalSignature, SignatureError, SignatureInfo};
 pub use integrity::{IntegrityError, IntegrityManager, IntegrityStatus};
-pub use secure_logging::{SecureLogger, SecureLoggingError, SensitivityLevel};
+pub use secure_logging::{SecureLogger, SecureLoggerBackend, SecureLoggingError, SensitivityLevel};
 pub use tamper_protection::{FileStatus, ImportanceLevel, TamperProtection, TamperProtectionError};
 
 use std::path::Path;

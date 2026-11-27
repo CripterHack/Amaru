@@ -5,7 +5,6 @@ use serde::{Serialize, Deserialize};
 use std::fs;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use log::{debug, error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleMetadata {

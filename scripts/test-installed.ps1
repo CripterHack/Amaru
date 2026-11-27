@@ -232,6 +232,13 @@ try {
     if ((Read-ProtectionStatus) -ne 1) { throw 'The installed service reported inactive real-time monitoring.' }
     $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='$name'"
     if ($service.StartMode -ne 'Auto' -or $service.PathName -notin @("`"$cli`" service-run","$cli service-run")) { throw 'Unexpected SCM registration.' }
+    foreach ($setting in @(@('false','Manual'), @('true','Auto'))) {
+        [void](Invoke-Cli @('autostart', ('--enable=' + $setting[0])))
+        $mode = (Get-CimInstance -ClassName Win32_Service -Filter "Name='$name'").StartMode
+        if ($mode -ne $setting[1]) { throw "Expected SCM startup mode $($setting[1]), got $mode." }
+        Assert-ServiceState 'Running'
+        Assert-NoRunEntries
+    }
 
     Push-Location -LiteralPath $env:TEMP
     try {

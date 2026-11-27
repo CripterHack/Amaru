@@ -234,7 +234,7 @@ async fn run() -> CliResult {
 }
 
 /// Optimiza los parámetros del sistema basado en los recursos disponibles
-fn optimize_for_system() -> Result<(), rayon::ThreadPoolBuildError> {
+fn optimize_for_system() -> CliResult {
     // Obtener información del sistema
     let mut system = System::new_all();
     system.refresh_all();
@@ -259,7 +259,9 @@ fn optimize_for_system() -> Result<(), rayon::ThreadPoolBuildError> {
 
         // Comprobar si estamos en modo de bajo consumo
         if cfg!(feature = "low_power") {
-            SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN);
+            if SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN) == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
         }
     }
 

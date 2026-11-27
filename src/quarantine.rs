@@ -81,6 +81,9 @@ enum Transaction {
         entry: QuarantineEntry,
         staged: PathBuf,
     },
+    CancelRestore {
+        staged: PathBuf,
+    },
     Discard {
         id: String,
     },
@@ -130,13 +133,20 @@ fn matches_content(path: &Path, entry: &QuarantineEntry) -> io::Result<bool> {
 }
 
 fn return_original(pending: &Path, original: &Path) -> io::Result<()> {
-    fs::hard_link(pending, original).map_err(|e| {
-        io::Error::other(format!(
-            "Original retained at {}. Could not recover {} without overwriting: {e}",
-            pending.display(),
-            original.display()
-        ))
-    })?;
+    if let Err(e) = fs::hard_link(pending, original) {
+        // A previous recovery may already have made the link before power was lost.
+        let same = e.kind() == io::ErrorKind::AlreadyExists
+            && link_metadata(original)?.is_some_and(|m| m.is_file())
+            && link_metadata(pending)?.is_some_and(|m| m.is_file())
+            && same_file::is_same_file(pending, original)?;
+        if !same {
+            return Err(io::Error::other(format!(
+                "Original retained at {}. Could not recover {} without overwriting: {e}",
+                pending.display(),
+                original.display()
+            )));
+        }
+    }
     sync_dir(parent_of(original))?;
     fs::remove_file(pending)
 }
@@ -152,7 +162,8 @@ impl Quarantine {
                 io::Error::new(io::ErrorKind::InvalidData, "Invalid quarantine key")
             })?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                if path.join("metadata.json").exists()
+                if path.join(".transaction").exists()
+                    || path.join("metadata.json").exists()
                     || fs::read_dir(&path)?.any(|e| {
                         e.is_ok_and(|e| e.path().extension().is_some_and(|ext| ext == "quar"))
                     })
@@ -333,19 +344,30 @@ impl Quarantine {
         if fs::canonicalize(parent)?.starts_with(&self.path) {
             return Err(io::Error::other("Cannot restore into the quarantine store").into());
         }
-        let mut file = Builder::new()
+        let canonical_parent = fs::canonicalize(parent)?;
+        let (mut file, staged) = Builder::new()
             .prefix(".amaru-restore-")
-            .tempfile_in(parent)?;
+            .tempfile_in(&canonical_parent)?
+            .keep()
+            .map_err(|err| err.error)?;
+        // Keep the exact path on I/O errors. Recovery distinguishes a leftover staged file
+        // from an atomic publish, even if a new destination contains the same bytes.
+        let mut disk_entry = entry.clone();
+        disk_entry.original_path = canonical_parent.join(
+            dest.file_name()
+                .ok_or_else(|| io::Error::other("Missing destination filename"))?,
+        );
         self.write_transaction(&Transaction::Restore {
-            entry: entry.clone(),
-            staged: file.path().to_owned(),
+            entry: disk_entry,
+            staged: staged.clone(),
         })?;
         file.write_all(&bytes)?;
-        file.as_file().sync_all()?;
-        if let Err(err) = file.persist_noclobber(&dest) {
+        file.sync_all()?;
+        drop(file);
+        if let Err(err) = tempfile::TempPath::from_path(&staged).persist_noclobber(&dest) {
             let io = err.error;
-            drop(err.file);
-            self.clear_transaction()?;
+            err.path.keep().map_err(|err| err.error)?;
+            self.cancel_restore(&staged)?;
             return Err(io.into());
         }
         sync_dir(parent)?;
@@ -473,15 +495,28 @@ impl Quarantine {
         Ok(Some(serde_json::from_slice(&raw)?))
     }
 
+    fn cancel_restore(&self, staged: &Path) -> io::Result<()> {
+        self.write_transaction(&Transaction::CancelRestore {
+            staged: staged.to_owned(),
+        })?;
+        self.finish_cancel_restore(staged)
+    }
+
+    fn finish_cancel_restore(&self, staged: &Path) -> io::Result<()> {
+        remove_if_present(staged)?;
+        sync_dir(parent_of(staged))?;
+        self.clear_transaction()
+    }
+
     fn recover(&self) -> io::Result<()> {
         match self.read_transaction()? {
             None => Ok(()),
             Some(Transaction::Discard { id }) => self.finish_discard(&id),
+            Some(Transaction::CancelRestore { staged }) => self.finish_cancel_restore(&staged),
             Some(Transaction::Restore { entry, staged }) => {
                 if staged.try_exists()? {
                     // A no-clobber publish was not completed. Preserve the archive for a retry.
-                    remove_if_present(&staged)?;
-                    sync_dir(parent_of(&staged))?;
+                    return self.cancel_restore(&staged);
                 } else if matches_content(&entry.original_path, &entry)? {
                     return self.start_discard(&entry.quarantine_name);
                 }
@@ -598,7 +633,9 @@ impl Quarantine {
         looks_internal
             && match self.read_transaction() {
                 Ok(Some(Transaction::Capture { pending, .. })) => pending == path,
-                Ok(Some(Transaction::Restore { staged, .. })) => staged == path,
+                Ok(Some(
+                    Transaction::Restore { staged, .. } | Transaction::CancelRestore { staged },
+                )) => staged == path,
                 _ => false,
             }
     }
@@ -779,6 +816,40 @@ mod tests {
             .list_entries()?
             .is_empty());
         assert_eq!(fs::read(source)?, b"saved");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_can_resume_after_linking_an_original() -> io::Result<()> {
+        let root = tempdir()?;
+        let pending = root.path().join("pending");
+        let original = root.path().join("source");
+        fs::write(&pending, b"changed before capture")?;
+        fs::hard_link(&pending, &original)?;
+        return_original(&pending, &original)?;
+        assert!(!pending.exists());
+        assert_eq!(fs::read(original)?, b"changed before capture");
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_restore_keeps_an_archive_even_when_destination_hash_matches(
+    ) -> Result<(), QuarantineError> {
+        let root = tempdir()?;
+        let directory = root.path().join("q");
+        let store = Quarantine::new(&directory, 1024, 30)?;
+        let path = root.path().join("source");
+        fs::write(&path, b"same contents")?;
+        let entry = store.quarantine_file(&path, "fixture")?;
+        fs::write(&path, b"same contents")?;
+        let staged = root.path().join(".amaru-restore-cancelled");
+        store.write_transaction(&Transaction::CancelRestore { staged })?;
+        let reopened = Quarantine::new(&directory, 1024, 30)?;
+        assert_eq!(
+            reopened.list_entries()?[0].quarantine_name,
+            entry.quarantine_name
+        );
+        assert_eq!(fs::read(path)?, b"same contents");
         Ok(())
     }
 

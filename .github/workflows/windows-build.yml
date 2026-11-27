@@ -46,10 +46,7 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          Get-WinEvent -FilterHashtable @{LogName='Application';StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue |
-            Where-Object { $_.ProviderName -in @('Application Error','SideBySide','Windows Error Reporting') } |
-            Select-Object -First 12 TimeCreated,Id,Message | Format-List
-          cargo test --locked --no-default-features --package amaru --lib -- --list
+          ./scripts/diagnose-startup.ps1
       - name: Build the desktop application and installer
         run: ./scripts/package.ps1
       - name: Exercise the installed application, upgrade and uninstall
@@ -57,10 +54,19 @@ jobs:
       - name: Require successful native tests
         if: always() && steps.native_tests.outcome != 'success'
         run: throw 'Core, service or CLI validation failed.'
+      - name: Record the tested installer checksum
+        shell: pwsh
+        run: |
+          $setup = Get-Item 'target/x86_64-pc-windows-msvc/release/AmaruAV-Setup.exe'
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $setup.FullName).Hash.ToLowerInvariant()
+          "$digest  $($setup.Name)" | Set-Content -LiteralPath "$($setup.FullName).sha256" -Encoding ascii
+          "Installer SHA-256 for $(git rev-parse HEAD) on $env:ImageOS ($env:ImageVersion) — $digest" >> $env:GITHUB_STEP_SUMMARY
       - name: Upload the tested development installer
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: amaru-windows-x64-development
           if-no-files-found: error
           retention-days: 14
-          path: target/x86_64-pc-windows-msvc/release/AmaruAV-Setup.exe
+          path: |
+            target/x86_64-pc-windows-msvc/release/AmaruAV-Setup.exe
+            target/x86_64-pc-windows-msvc/release/AmaruAV-Setup.exe.sha256

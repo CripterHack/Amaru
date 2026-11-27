@@ -16,6 +16,8 @@
   let recentThreats: ThreatEntry[] = [];
   let history: ScanRecord[] = [];
   let scanning = false;
+  let scanRevision = 0;
+  let subscriptionsReady: Promise<unknown> = Promise.resolve();
   let toggling = false;
   let isLoadingActivityLog = true;
   type Activity = { id: string; type: string; message: string; date: string; status: string };
@@ -49,8 +51,12 @@
 
   async function startScan() {
     if (scanning) return;
+    scanRevision++;
     scanning = true;
-    try { await invoke('start_quick_scan'); }
+    try {
+      await subscriptionsReady;
+      await invoke('start_quick_scan');
+    }
     catch (err) { scanning = false; notify('Scan failed', String(err), 'error'); }
   }
 
@@ -75,19 +81,19 @@
 
   onMount(() => {
     let active = true;
-    let generation = 0;
+    const initialRevision = scanRevision;
     const subscriptions = [
-      listen<ScanProgress>('scan-progress', () => { generation++; scanning = true; }),
-      listen<ScanRecord>('scan-completed', () => { generation++; scanning = false; void loadData(); }),
+      listen<ScanProgress>('scan-progress', () => { scanRevision++; scanning = true; }),
+      listen<ScanRecord>('scan-completed', () => { scanRevision++; scanning = false; void loadData(); }),
       listen<ThreatEntry>('threat-detected', ({ payload }) => {
         recentThreats = [payload, ...recentThreats.slice(0, 9)];
       })
     ];
     const stop = manageListeners(subscriptions);
-    void Promise.all(subscriptions).then(async () => {
-      const before = generation;
+    subscriptionsReady = Promise.all(subscriptions);
+    void subscriptionsReady.then(async () => {
       const progress = await invoke<ScanProgress | null>('get_scan_progress');
-      if (active && before === generation) scanning = !!progress;
+      if (active && initialRevision === scanRevision) scanning = !!progress;
     }).catch(err => error = String(err));
     void loadData(); void refreshResources();
     const timer = setInterval(refreshResources, 5000);

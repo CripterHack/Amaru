@@ -228,7 +228,7 @@
             <div
               class="animate-pulse shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-primary-500"
               style="width: 100%"
-            />
+            ></div>
           </div>
         </div>
         {#if $antivirusStore.currentFile}
