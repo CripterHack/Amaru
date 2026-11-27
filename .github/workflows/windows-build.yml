@@ -1,0 +1,27 @@
+name: Windows application build
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-build.yml'
+      - 'Cargo.*'
+      - 'build.rs'
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'scripts/package.ps1'
+      - 'installer/unified_installer.nsi'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check the application before packaging
+        run: cargo check --locked --package amaru --bin amaru --target x86_64-pc-windows-msvc
+      - name: Build the development installer from this checkout
+        run: ./scripts/package.ps1
