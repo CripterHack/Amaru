@@ -22,6 +22,8 @@ function Test-ProtectedDirectory {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
         $acl = Get-Acl -LiteralPath $item.FullName
         if ($acl.GetOwner($sid).Value -notin $trusted) { return $false }
+        $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+        if ($null -eq $descriptor.DiscretionaryAcl) { return $false }
         foreach ($rule in $acl.GetAccessRules($true, $true, $sid)) {
             if ($rule.AccessControlType -ne 'Allow' -or -not ($rule.FileSystemRights -band $writeMask)) { continue }
             if ($rule.IdentityReference.Value -eq 'S-1-3-0' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }

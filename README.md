@@ -60,9 +60,10 @@ These features define the Windows 11 product scope. Implementation and validatio
 
 ### Developer Requirements
 - Rust MSVC toolchain 1.89 or later (the secure logger uses standard-library file locking)
-- Node.js 18 or later (for UI development)
+- Node.js 22 LTS and npm for the desktop frontend
 - Visual Studio Build Tools with C++ workload
-- Git for Windows
+- Git for Windows and NSIS 3 for packaging
+- Microsoft Edge WebView2 Runtime for the installed desktop application
 
 ---
 
@@ -70,63 +71,38 @@ These features define the Windows 11 product scope. Implementation and validatio
 
 ### Release availability
 
-As of 2026-11-27 the project has no published GitHub release. The source tree includes an installer and a packaged executable from earlier development. Their provenance and behavior on Windows 11 still need validation before distribution. Check the [Releases page](https://github.com/CripterHack/Amaru/releases) for versioned downloads.
+There is no published stable release as of 2026-11-27. Successful Windows application workflow runs publish a development installer from the tested revision for 14 days. See the [Windows build runs](https://github.com/CripterHack/Amaru/actions/workflows/windows-build.yml) and [release history](https://github.com/CripterHack/Amaru/releases).
 
 ### Developer Installation
-1. **Install Rust:**
-   ```powershell
-   winget install Rustlang.Rust.MSVC
-   ```
 
-2. **Install Dependencies:**
-   ```powershell
-   # Install Radare2
-   winget install radare.radare2
-   
-   # Install YARA (4.3+)
-   # Download from https://github.com/VirusTotal/yara/releases
-   
-   # For UI development
-   winget install OpenJS.NodeJS.LTS
-   ```
+On a Windows x64 development machine with the prerequisites above, run the following commands in PowerShell.
 
-3. **Clone the project and check the build on Windows 11.** The workspace and GUI use separate build commands. A successful build of the complete Windows application is pending.
-   ```powershell
-   git clone https://github.com/CripterHack/Amaru.git
-   cd Amaru
-   
-   # Build backend
-   cargo build --locked --release
-   
-   # Build GUI
-   cd gui
-   npm ci
-   npm run build
-   
-   cd ..
-   ```
+```powershell
+git clone https://github.com/CripterHack/Amaru.git
+cd Amaru
+cargo test --locked -p amaru --all-targets
+.\scripts\package.ps1
+```
 
-4. **Review the configuration.** The core reads the repository's [config.toml](config.toml) by default.
+The script builds the CLI, Tauri desktop executable and bundled Svelte assets from the same checkout. It writes `target/x86_64-pc-windows-msvc/release/AmaruAV-Setup.exe`. Install into the default protected Program Files location to register the Windows service. The installer preserves configuration and user data on upgrade. Packaging prerequisites, switches and the isolated installation test are documented in the [installer guide](installer/README.md).
 
-5. **Run the examples once the backend builds.**
-   ```powershell
-   # Run the EICAR test file detection example
-   cargo run --example eicar_detection
-   
-   # Run other examples
-   cargo run --example use_core_services
-   ```
+The CLI reads `config.toml` next to the executable when present. Pass `--config <path>` to use a different file. Install Radare2 for optional static analysis. Cargo builds the vendored classic YARA library. The standalone YARA-X tool has its own [setup and verification procedure](docs/technical/yara-x.md).
+
+```powershell
+cargo run --locked --example eicar_detection
+cargo run --locked --example use_core_services
+```
 
 ---
 
 ## 🚀 Usage
 
 ### GUI Interface
-The intended desktop workflow on Windows 11 has three steps.
+The desktop application supports the following workflows.
 
 1. Launch Amaru from the Start menu or desktop shortcut.
 2. Use the dashboard to view protection status and recent events.
-3. Schedule scans and configure protection settings through the Settings page.
+3. Open Scan configuration to choose quick scan folders and schedule a daily or weekly scan. Results appear in the scan history for the signed-in account.
 
 ### Command Line Interface
 Use `scan` to check files or directories and `analyze` for a detailed report on one file. Scans are recursive by default. Pass `--recursive=false` for a single directory level or `--heuristic=false` to disable heuristics explicitly. Detailed analysis requests Radare2 by default and accepts `--radare2=false` to use the built-in engines alone. Use `--config <path>` to select a TOML configuration.
@@ -175,7 +151,7 @@ amaru service --action status
 ```
 
 ### Scheduling
-The planned scheduler supports daily and weekly scans. The following examples specify its proposed CLI syntax. The current command parser has no `schedule` subcommand.
+Use Scan configuration to schedule quick scans for the current Windows account. The CLI also accepts a fixed file or directory for a daily or weekly task. A fixed scheduled location leaves the manual quick scan folders unchanged. Use `amaru schedule --status` to inspect the task and `amaru schedule --disable` to remove it.
 
 ```powershell
 # Schedule a daily scan at 3 AM

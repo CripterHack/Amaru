@@ -7,6 +7,8 @@
   // Quarantine state
   let loading = true;
   let acting = false;
+  let scope: 'desktop' | 'service' = 'desktop';
+  let request = 0;
   let error: string | null = null;
   let quarantineItems: QuarantineItem[] = [];
   let selectedItems: string[] = [];
@@ -63,9 +65,9 @@
     const selected = [...selectedItems];
     const verb = restore ? 'Restore' : 'Permanently delete';
     try {
-      if (!await ask(`${verb} ${selected.length} selected file(s)?`, { title: 'Confirm quarantine action', type: 'warning' })) return;
+      if (!await ask(`${verb} ${selected.length} selected file(s) from ${scope} quarantine?`, { title: 'Confirm quarantine action', type: 'warning' })) return;
       for (const id of selected) {
-        await invoke(restore ? 'restore_quarantined_file' : 'delete_quarantined_file', { id });
+        await invoke(restore ? 'restore_quarantined_file' : 'delete_quarantined_file', { id, scope });
         selectedItems = selectedItems.filter(item => item !== id);
       }
       notify('Quarantine updated', `${selected.length} item(s) processed`, 'success');
@@ -78,13 +80,16 @@
   }
 
   async function loadQuarantineItems() {
+    const revision = ++request;
     loading = true;
     try {
-      quarantineItems = await invoke<QuarantineItem[]>('get_quarantined_files');
+      const items = await invoke<QuarantineItem[]>('get_quarantined_files', { scope });
+      if (revision !== request) return;
+      quarantineItems = items;
       error = null;
       selectedItems = selectedItems.filter(id => quarantineItems.some(item => item.id === id));
-    } catch (err) { error = String(err); }
-    finally { loading = false; }
+    } catch (err) { if (revision === request) { error = String(err); selectedItems = []; } }
+    finally { if (revision === request) loading = false; }
   }
 
   onMount(() => {
@@ -100,11 +105,17 @@
       <div>
         <h2 class="text-xl font-semibold">Quarantined Items</h2>
         <p class="text-gray-500 dark:text-gray-400 text-sm mt-1">
-          Review files isolated in the desktop quarantine.
+          Review and manage files isolated by the selected scanner.
         </p>
       </div>
       
       <div class="flex gap-2">
+        <label>Quarantine source
+          <select bind:value={scope} disabled={acting} on:change={() => { selectedItems = []; void loadQuarantineItems(); }}>
+            <option value="desktop">Desktop</option>
+            <option value="service">Windows service (administrator)</option>
+          </select>
+        </label>
         <button 
           on:click={() => applySelection(true)}
           disabled={acting || selectedItems.length === 0}
@@ -138,7 +149,7 @@
         </svg>
         <h3 class="text-lg font-medium mt-4">No Quarantined Items</h3>
         <p class="text-gray-500 dark:text-gray-400 mt-2">
-          The desktop quarantine contains no files.
+          The selected quarantine contains no files.
         </p>
       </div>
     {:else}
@@ -187,7 +198,7 @@
                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                   {formatFileSize(item.fileSize)}
                 </td>
-                
+
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 space-x-2">
                   <button 
                     on:click={() => {

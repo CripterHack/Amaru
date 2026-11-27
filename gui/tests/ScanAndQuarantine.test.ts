@@ -46,8 +46,21 @@ test('restores only confirmed quarantine selections and keeps a failed item visi
   render(Quarantine);
   await fireEvent.click(await screen.findByRole('button', { name: 'Restore', exact: true }));
   await waitFor(() => expect(ask).toHaveBeenCalledOnce());
-  expect(invoke).not.toHaveBeenCalledWith('restore_quarantined_file', {id:'q1'});
+  expect(invoke).not.toHaveBeenCalledWith('restore_quarantined_file', {id:'q1', scope:'desktop'});
   await fireEvent.click(await screen.findByRole('button', {name:'Restore', exact:true}));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('restore_quarantined_file', {id:'q1'}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('restore_quarantined_file', {id:'q1', scope:'desktop'}));
   expect(await screen.findByText('sample.txt')).toBeInTheDocument();
+});
+
+test('shows service access errors when switching quarantine source', async () => {
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command !== 'get_quarantined_files') throw new Error(command);
+    if (args?.scope === 'service') throw new Error('Service access denied');
+    return [];
+  });
+  render(Quarantine);
+  await screen.findByText('The selected quarantine contains no files.');
+  await fireEvent.change(screen.getByRole('combobox', { name: 'Quarantine source' }), { target: {value: 'service'} });
+  expect(await screen.findByText(/Error: .*Service access denied/)).toBeInTheDocument();
+  expect(screen.queryByText('The selected quarantine contains no files.')).toBeNull();
 });

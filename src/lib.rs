@@ -3,7 +3,9 @@ pub mod config;
 mod core_services;
 pub mod events;
 pub mod quarantine;
+pub mod quick_paths;
 mod resource_manager;
+pub mod scheduler;
 mod security;
 
 pub use behavior::{BehaviorAnalyzer, MaliciousBehavior, MaliciousBehaviorType};
@@ -525,6 +527,13 @@ impl ScanResult {
 
 impl Amaru {
     pub(crate) fn from_config(config: Config) -> Result<Self, AmaruError> {
+        Self::from_config_with_radare2(config, |_| true)
+    }
+
+    pub(crate) fn from_config_with_radare2(
+        config: Config,
+        allowed: impl FnOnce(&mut Radare2Analyzer) -> bool,
+    ) -> Result<Self, AmaruError> {
         config
             .validate()
             .map_err(|e| AmaruError::Config(e.to_string()))?;
@@ -552,7 +561,7 @@ impl Amaru {
             timeout_seconds: config.scan_config.scan_timeout,
             ..Default::default()
         }) {
-            Ok(analyzer) => Some(analyzer),
+            Ok(mut analyzer) => allowed(&mut analyzer).then_some(analyzer),
             Err(radare2_analyzer::Radare2Error::NotFound) => None,
             Err(e) => return Err(AmaruError::Analysis(e.to_string())),
         };
@@ -561,9 +570,7 @@ impl Amaru {
             config.quarantine_config.max_size,
             config.quarantine_config.retention_days,
         )?;
-        let slots = Arc::new(tokio::sync::Semaphore::new(
-            config.scan_config.max_threads.max(1),
-        ));
+        let slots = Arc::new(tokio::sync::Semaphore::new(config.scan_config.max_threads));
         Ok(Self {
             scanner: Arc::new(Scanner {
                 config,
@@ -742,6 +749,7 @@ impl Amaru {
             .map_err(|e| AmaruError::RealTimeMonitorError(e.to_string()))?;
         let (tx, mut rx) = mpsc::channel::<PathBuf>(256);
         let events = self.scanner.events.clone();
+        let quarantine = self.scanner.quarantine.clone();
         watcher
             .start(move |ev| {
                 let path = match ev.event_type {
@@ -749,12 +757,7 @@ impl Amaru {
                     FileEventType::Renamed(new) => new,
                     FileEventType::Deleted => return EventAction::Continue,
                 };
-                if path.components().any(|component| {
-                    component
-                        .as_os_str()
-                        .to_string_lossy()
-                        .starts_with(".amaru-quarantine-")
-                }) {
+                if quarantine.is_staging_path(&path) {
                     return EventAction::Continue;
                 }
                 if let Err(mpsc::error::TrySendError::Full(path)) = tx.try_send(path) {
@@ -1098,6 +1101,10 @@ impl Event {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod pe_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -1152,6 +1159,43 @@ mod tests {
         amaru.update_yara_rules().await?;
         let revised = amaru.scan_file(&path).await?;
         assert!(revised.yara_matches.is_empty() && revised.threat_details.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pe_import_evidence_is_distinct_from_incidental_strings() -> Result<(), AmaruError> {
+        let temp = tempdir()?;
+        let config = scan_config(temp.path())?;
+        let amaru = Amaru::new(config).await?;
+        let path = temp.path().join("metadata.exe");
+        let incidental = pe_fixture::import_fixture(&[], b"NtCreateFile WSAConnect");
+        std::fs::write(&path, incidental)?;
+        let result = amaru.scan_file_with_options(&path, true, false).await?;
+        let has_import = |p: &yara_engine::heuristic::PatternMatch| {
+            matches!(
+                p.pattern_name.as_str(),
+                "rootkit_system_hook" | "backdoor_remote_connection"
+            )
+        };
+        assert!(!result
+            .heuristic_result
+            .unwrap()
+            .patterns
+            .iter()
+            .any(has_import));
+        let imports = pe_fixture::import_fixture(&["NtCreateFile", "WSAConnect"], b"");
+        std::fs::write(&path, imports)?;
+        let result = amaru.scan_file_with_options(&path, true, false).await?;
+        assert_eq!(
+            result
+                .heuristic_result
+                .unwrap()
+                .patterns
+                .iter()
+                .filter(|p| has_import(p))
+                .count(),
+            2
+        );
         Ok(())
     }
 

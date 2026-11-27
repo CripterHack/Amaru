@@ -4,14 +4,31 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $name = 'Amaru-QuickScan-' + $identity.User.Value
 $exe = $env:AMARU_SCHEDULE_EXE
 $argument = '--scheduled-quick-scan'
+$utf8 = [Text.UTF8Encoding]::new($false, $true)
+function Read-ActionTarget($action) {
+    if ($action.Execute -ne $exe) { throw 'A task with this name belongs to another installation.' }
+    if ($action.Arguments -ceq $argument) { return $null }
+    if ($action.Arguments -cnotmatch '^--scheduled-quick-scan --path-base64 ([A-Za-z0-9+/]+={0,2})\z') {
+        throw 'Unrecognized Amaru scheduled scan action.'
+    }
+    $encoded = $matches[1]
+    $bytes = [Convert]::FromBase64String($encoded)
+    $path = $utf8.GetString($bytes)
+    if ([Convert]::ToBase64String($bytes) -cne $encoded -or $path.IndexOf([char]0) -ge 0 -or
+        $path -notmatch '^(?:[a-zA-Z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)') {
+        throw 'Invalid destination in the scheduled scan action.'
+    }
+    return $path
+}
 function Read-Task {
     # An empty root folder and a failed Task Scheduler query have different outcomes.
     @(Get-ScheduledTask | Where-Object { $_.TaskPath -eq '\' -and $_.TaskName -eq $name }) | Select-Object -First 1
 }
 try {
     $task = Read-Task
-    if ($task -and ($task.Actions.Count -ne 1 -or $task.Actions[0].Execute -ne $exe -or $task.Actions[0].Arguments -ne $argument)) {
-        throw 'A task with this name belongs to another installation.'
+    if ($task) {
+        if ($task.Actions.Count -ne 1) { throw 'A task with this name has a different action.' }
+        $target = Read-ActionTarget $task.Actions[0]
     }
     switch ($env:AMARU_SCHEDULE_MODE) {
         'set' {
@@ -21,7 +38,12 @@ try {
             } else {
                 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek ([DayOfWeek][int]$env:AMARU_SCHEDULE_DAY) -At $time
             }
-            $action = New-ScheduledTaskAction -Execute $exe -Argument $argument
+            $target = $env:AMARU_SCHEDULE_PATH
+            $actionArgs = $argument
+            if ($target) {
+                $actionArgs += ' --path-base64 ' + [Convert]::ToBase64String($utf8.GetBytes($target))
+            }
+            $action = New-ScheduledTaskAction -Execute $exe -Argument $actionArgs
             $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
             $options = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew
             $task = Register-ScheduledTask -TaskName $name -TaskPath '\' -Trigger $trigger -Principal $principal -Action $action -Settings $options -Force
@@ -48,7 +70,7 @@ try {
         default { throw 'The task uses an unsupported trigger.' }
     }
     $time = [datetime]::Parse($trigger.StartBoundary, [cultureinfo]::InvariantCulture).ToString('HH:mm')
-    @{frequency=$frequency;time=$time;day=$day} | ConvertTo-Json -Compress
+    @{frequency=$frequency;time=$time;day=$day;path=$target} | ConvertTo-Json -Compress
 } catch {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 1

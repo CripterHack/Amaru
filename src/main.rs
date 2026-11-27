@@ -140,6 +140,18 @@ async fn update(config_path: &Path, rules: bool, clamav: bool, heuristic: bool) 
 async fn execute(cli: Cli) -> CliResult {
     let config_path = cli.config.unwrap_or_else(default_config_path);
     match cli.command {
+        Commands::Schedule(options) => {
+            let desktop = env::current_exe()?.with_file_name("amaru-antivirus.exe");
+            let schedule = if options.status {
+                amaru::scheduler::read(&desktop)?
+            } else if options.disable {
+                amaru::scheduler::remove(&desktop)?
+            } else {
+                amaru::scheduler::set(&desktop, &options.schedule()?)?
+            };
+            println!("{}", serde_json::to_string(&schedule)?);
+            Ok(())
+        }
         Commands::TestEicar => eicar_self_test::run(&config_path),
         Commands::Scan {
             path,

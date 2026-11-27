@@ -13,7 +13,11 @@ La fachada de integración descrita en este documento es un contrato de diseño.
 | Análisis estático | `Radare2Analyzer::analyze_file` analiza una ruta con Radare2. | [Implementación y pruebas](../../radare2-analyzer/src/lib.rs) |
 | Actualizaciones de reglas | `Updater::check_updates` consulta el manifiesto. `apply_update` verifica e instala el paquete. | [Código](../../updater/src/lib.rs) · [Pruebas de actualización](../../updater/tests/updates.rs) |
 
-El código del núcleo define `Amaru::new` y `Amaru::scan_file`. La validación de la aplicación completa y la de los componentes se registran por separado. [Código del núcleo](../../src/lib.rs) · [Estado de desarrollo](../../status_development.md)
+### Resultados en la implementación actual
+
+`Amaru::new(config).await` carga la configuración y las reglas. `scan_file(path).await` devuelve evidencia de un archivo o un error. La lista de coincidencias YARA, las señales heurísticas y el riesgo acompañan al hash SHA-256. Un resultado de riesgo bajo sin evidencia representa un archivo analizado sin hallazgos. [Núcleo](../../src/lib.rs)
+
+La sesión del escritorio agrega los resultados individuales. Registra identificador, fechas, estado, duración, archivos analizados, omitidos y fallidos, hallazgos y acciones. La cancelación conserva los resultados obtenidos. La cuarentena del monitor aplica el umbral y comprueba el hash antes de confirmar el aislamiento. [Sesión de escritorio](../../gui/src-tauri/src/session.rs) · [Cuarentena](../../src/quarantine.rs) · [Estado de desarrollo](../../status_development.md)
 
 ## Índice
 

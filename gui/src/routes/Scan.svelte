@@ -10,6 +10,7 @@
   import type { ScanProgress, ScanRecord } from '../lib/stores/statusStore';
 
   let progress: ScanProgress | null = null;
+  let revision = 0;
   let starting = false;
   let cancelling = false;
   let history: ScanRecord[] = [];
@@ -29,7 +30,6 @@
   }
 
   onMount(() => {
-    let revision = 0;
     let active = true;
     const registrations = [
       listen<ScanProgress>('scan-progress', ({ payload }) => { revision++; progress = payload; }),
@@ -60,7 +60,9 @@
       } else {
         await invoke(type === 'quick' ? 'start_quick_scan' : 'start_full_scan');
       }
-      progress = await invoke<ScanProgress | null>('get_scan_progress');
+      const before = revision;
+      const current = await invoke<ScanProgress | null>('get_scan_progress');
+      if (revision === before) progress = current;
     } catch (error) {
       notify('Scan error', String(error), 'error');
     } finally { starting = false; }
@@ -89,7 +91,7 @@
       <div class="flex justify-between items-center mb-4">
         <h2 class="text-xl font-semibold">Scan in Progress</h2>
         <button 
-          on:click={cancelScan} disabled={cancelling} 
+          on:click={cancelScan} disabled={cancelling}
           class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-md"
         >
           {cancelling ? 'Cancelling…' : 'Cancel scan'}

@@ -45,6 +45,7 @@ pub enum IpcCommand {
     CheckUpdates,
     QuarantineFile { path: String, reason: String },
     RestoreFromQuarantine { entry_id: String },
+    DeleteQuarantinedFile { entry_id: String },
     GetQuarantineList,
 }
 
@@ -392,6 +393,15 @@ impl IpcClient {
             IpcResponse::Ok => Ok("Archivo restaurado correctamente".to_string()),
             _ => Err(IpcError::ServiceError(
                 "Respuesta inesperada del servicio".to_string(),
+            )),
+        }
+    }
+
+    pub fn delete_quarantined_file(&mut self, entry_id: String) -> Result<(), IpcError> {
+        match self.send_command(IpcCommand::DeleteQuarantinedFile { entry_id })? {
+            IpcResponse::Ok => Ok(()),
+            _ => Err(IpcError::ServiceError(
+                "Respuesta inesperada del servicio".into(),
             )),
         }
     }

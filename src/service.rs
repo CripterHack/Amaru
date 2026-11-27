@@ -40,8 +40,8 @@ mod scan;
 mod scm;
 use scm::SERVICE_NAME;
 pub use scm::{
-    get_service_status, install_service, restart_service, set_autostart, start_service,
-    stop_service, uninstall_service,
+    get_service_status, install_service, is_autostart_enabled, restart_service, set_autostart,
+    start_service, stop_service, uninstall_service,
 };
 
 pub struct ServiceConfig {
@@ -226,7 +226,39 @@ async fn serve(
     }
     let mut server = create_pipe(PIPE_NAME, true)?;
     let mut public_status = create_pipe(STATUS_PIPE_NAME, true)?;
-    let mut engine = Amaru::new(config.clone()).await.map_err(io::Error::other)?;
+    report(
+        handle,
+        ServiceState::StartPending,
+        2,
+        ServiceExitCode::Win32(0),
+    )
+    .map_err(io::Error::other)?;
+    let mut engine = Amaru::from_config_with_radare2(config.clone(), |analyzer| {
+        let binary = analyzer.executable_path();
+        let allowed = binary.parent().is_some_and(|dir| {
+            scm::validate_install_directory(dir)
+                .inspect_err(|err| {
+                    log::warn!("Service skipped Radare2 at {}: {err}", binary.display())
+                })
+                .is_ok()
+        });
+        if allowed {
+            analyzer.restrict_dependency_search();
+        }
+        allowed
+    })
+    .map_err(io::Error::other)?;
+    engine
+        .init_core_services()
+        .await
+        .map_err(io::Error::other)?;
+    report(
+        handle,
+        ServiceState::StartPending,
+        3,
+        ServiceExitCode::Win32(0),
+    )
+    .map_err(io::Error::other)?;
     if config.realtime_protection {
         engine
             .enable_realtime_protection()
@@ -463,6 +495,15 @@ async fn handle_command(
                 .await
                 .integrated_restore_file(&entry_id)
                 .await?;
+            IpcResponse::Ok
+        }
+        IpcCommand::DeleteQuarantinedFile { entry_id } => {
+            state
+                .amaru
+                .read()
+                .await
+                .quarantine()
+                .delete_file_by_id(&entry_id)?;
             IpcResponse::Ok
         }
         IpcCommand::GetQuarantineList => {

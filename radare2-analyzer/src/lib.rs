@@ -139,6 +139,7 @@ impl Default for Radare2Config {
 /// Radare2 analyzer for static file analysis
 pub struct Radare2Analyzer {
     config: Radare2Config,
+    restricted_dependency_search: bool,
 }
 
 impl Radare2Analyzer {
@@ -148,7 +149,17 @@ impl Radare2Analyzer {
             .filter(|path| path.is_file())
             .ok_or(Radare2Error::NotFound)?;
         config.radare2_path = Some(binary.canonicalize()?);
-        Ok(Self { config })
+        Ok(Self { config, restricted_dependency_search: false })
+    }
+
+    /// Canonical executable selected during initialization.
+    pub fn executable_path(&self) -> &Path {
+        self.config.radare2_path.as_deref().expect("path resolved by constructor")
+    }
+
+    /// For a service that already verified the executable directory and its contents.
+    pub fn restrict_dependency_search(&mut self) {
+        self.restricted_dependency_search = true;
     }
 
     fn find_radare2() -> Option<PathBuf> {
@@ -431,7 +442,14 @@ impl Radare2Analyzer {
     async fn run_json<T: DeserializeOwned>(&self, path: &Path, query: &str) -> Result<T, Radare2Error> {
         let binary = self.config.radare2_path.as_ref().ok_or(Radare2Error::NotFound)?;
         debug!("Running r2 {} on {}", query, path.display());
-        let output = AsyncCommand::new(binary)
+        let mut command = AsyncCommand::new(binary);
+        if self.restricted_dependency_search {
+            let directory = binary.parent().ok_or(Radare2Error::NotFound)?;
+            // Windows also searches the executable and system directories. A service must
+            // never search the sample directory or other PATH entries for a dependency.
+            command.current_dir(directory).env("PATH", "");
+        }
+        let output = command
             .args(["-NN", "-q", "-c", query])
             .arg(path)
             .kill_on_drop(true)

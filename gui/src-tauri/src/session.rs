@@ -113,6 +113,7 @@ pub async fn run(
     let excluded = &core.config().scan_config.exclude_paths;
     'paths: for root in roots {
         let entries = WalkDir::new(root)
+            .follow_root_links(false)
             .follow_links(false)
             .into_iter()
             .filter_entry(|entry| {

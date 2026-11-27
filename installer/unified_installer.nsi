@@ -193,7 +193,7 @@ Section "Instalación" SEC_MAIN
   SetOverwrite off
   File "..\config.toml"
   SetOverwrite on
-  
+
   ; Crear estructura de directorios usando SetOutPath, que es más seguro
   SetOutPath "$INSTDIR\config"
   SetOutPath "$INSTDIR\signatures\official"
@@ -205,7 +205,7 @@ Section "Instalación" SEC_MAIN
   SetOutPath "$INSTDIR\modules"
   SetOutPath "$INSTDIR\logs"
   SetOutPath "$INSTDIR\quarantine"
-  
+
   ; Configuración de ambiente si es necesario
   ${IfNot} ${FileExists} "$INSTDIR\.env"
     FileOpen $0 "$INSTDIR\.env" w
@@ -224,10 +224,10 @@ Section "Instalación" SEC_MAIN
     FileWrite $0 "LOW_RESOURCE_MODE=false$\r$\n"
     FileClose $0
   ${EndIf}
-  
+
   ; Volver a la carpeta principal
   SetOutPath "$INSTDIR"
-  
+
   WriteUninstaller "$INSTDIR\uninstall.exe"
   ${If} $PreviousService != "Skip"
     !insertmacro ServiceControl Install
@@ -237,9 +237,8 @@ Section "Instalación" SEC_MAIN
     ${EndIf}
   ${EndIf}
   SetOutPath "$INSTDIR"
-  ; Crear uninstalador mejorado
 
-  
+
   ; Registrar información del programa
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayVersion" "${PRODUCT_VERSION}"
@@ -249,7 +248,7 @@ Section "Instalación" SEC_MAIN
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoModify" "1"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoRepair" "1"
-  
+
   ; SCM administra el inicio de la protección. Retirar las entradas heredadas de la GUI.
   SetRegView 32
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
@@ -297,7 +296,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${PRODUCT_NAME}\Desinstalar ${PRODUCT_NAME}.lnk"
   Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
   RMDir "$SMPROGRAMS\${PRODUCT_NAME}"
-  
+
   ; Borrar archivos principales
   ClearErrors
   ${If} ${FileExists} "$INSTDIR\amaru.exe"
@@ -331,16 +330,16 @@ Section "Uninstall"
   ClearErrors
   RMDir "$INSTDIR"
   ClearErrors
-  
+
   ; Limpiar registros completamente
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
   DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
-  
+
   ; Limpiar cualquier otra entrada que pueda quedar
   DeleteRegKey HKCU "Software\${PRODUCT_NAME}"
   DeleteRegKey HKLM "Software\${PRODUCT_NAME}"
-  
+
   ; Mostrar mensaje de desinstalación completa
   MessageBox MB_OK|MB_ICONINFORMATION "Se ha desinstalado Amaru Antivirus." /SD IDOK
-SectionEnd 
+SectionEnd

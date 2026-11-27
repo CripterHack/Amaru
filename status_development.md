@@ -1,33 +1,30 @@
 # Amaru development status
 
-## Validation record for 2026-11-27
+## Integration status on 2026-11-27
 
-The Windows 11 application remains experimental. The starting revision was `850ec7e` (2025-04-01). The checks below cover the changes in [PR #4](https://github.com/CripterHack/Amaru/pull/4). The historical module assessments follow this record.
+Amaru targets Windows 11 x64 and remains experimental. The integration work builds on `850ec7e` and is tracked in [PR #4](https://github.com/CripterHack/Amaru/pull/4). Check the run for the revision you are installing. [Windows application workflow](.github/workflows/windows-build.yml) · [Component validation](.github/workflows/validation.yml)
 
-| Area | What was verified | Remaining work |
+| Area | Implemented and exercised | Outstanding acceptance |
 |---|---|---|
-| Shipped signatures | Classic YARA and YARA-X compiled 24 rules from nine files. Both matched all 651 selected NDAAL inputs and rejected the three negative controls. | Archive extraction, detection rates on representative samples and false-positive rates on legitimate software. |
-| Native YARA engine | Loaded the shipped rule tree, detected EICAR in a file and in memory, retained working rules after an invalid reload and dropped removed rules. | Exercise the engine through the installed service. Five bundled rules use the same sample marker; family-specific detection needs separate evidence. |
-| Real-time monitor | File notifications, extension filters, rename handling, dynamic watch paths and restart are covered by native component tests. | Exercise Windows service startup, stop, permissions and quarantine together. |
-| Radare2 | Ten tests passed with each of Radare2 5.8.8 and 6.2.6 on Linux, including analysis of a benign Windows executable. | Reconcile the analyzer API with its Windows application callers. |
-| Rule updater | Six tests cover package signing, download verification, successful installation and rejection without changing installed rules. File bytes use Ed25519 signatures; metadata is retrieved over HTTPS. | Exercise a deployed update endpoint, configured trust key and service reload on Windows. |
-| Svelte frontend | Clean npm installation with Node 22, full type check, eight component tests and Vite production build. The protection indicator waits for a backend response. | Exercise these flows against the native Tauri backend. Production dependency audit identified two moderate findings in the Svelte 4 dependency chain. |
-| Documentation | CI checks repository Markdown links and heading anchors. The technical index links the specifications, available guides and pending technical coverage. | Verify external service availability and benchmark claims separately. |
-| Installer | PowerShell/NSIS checks on Linux rejected missing, empty and PE32 input and a failed Cargo build. A benign x64 test executable exercised NSIS packaging. | Build the current application on Windows x64, then install, upgrade and uninstall it on Windows 11. |
+| Detection rules | Both classic YARA and the standalone YARA-X scanner compile the shipped catalog and pass the selected 651 EICAR variants and three negative controls. | Detection rates on representative samples, archive extraction and independent false-positive measurements. |
+| Core and CLI | On-demand scans, memory and file YARA, the EICAR self-test, heuristic PE import analysis, optional Radare2 and error propagation have native tests. Fresh scans verify content before using cached results. | Representative performance measurements on Windows 11 hardware. |
+| Monitor and quarantine | The service tracks actual watcher state. A matching digest and an explicit high-risk automatic policy are required to isolate a file. Restoration validates the payload and refuses to overwrite an occupied original path. | Endurance, crash recovery and permission coverage across supported Windows 11 configurations. |
+| Desktop | Tauri connects the dashboard, manual scans, cancellation, history and quarantine actions to native results. Quick scan folders persist per account. Windows Task Scheduler runs scheduled scans as the signed-in user. | Interactive acceptance and accessibility testing on supported Windows 11 editions. |
+| Rules updater | Ed25519 verification and compilation of the staged catalog precede activation. A regression covers a correctly signed package containing invalid rules and preserves the installed catalog. | An operational update endpoint with a published trust key. |
+| Distribution | The Windows workflow builds the core, desktop and NSIS package from a single checkout. It tests the installed software and upgrade before publishing its development artifact. | A signed release, release provenance and an installation record on Windows 11. |
+| Documentation | Local Markdown links and heading anchors are checked in CI. The technical references distinguish implemented interfaces from proposed interfaces. | Keep release evidence with each version and record external service availability separately. |
+
+### Detection and response contract
+
+A successful per-file result carries its SHA-256 digest, risk and supporting evidence. The analyzer's lowest risk label is `Low`. A successful scan with no findings is clean for that scan. Read errors, size skips and cancellations have distinct outcomes. A desktop session aggregates file counts and findings, saves its own identifier and timestamps, and records the action taken. Quarantine is confirmed only after successful isolation.
+
+In the experimental configuration, automatic quarantine is opt-in. When `[quarantine_config] auto_quarantine = true`, monitored files rated `High` or `Critical` are eligible. The digest must still match the bytes analyzed. Manual desktop scans report their findings. The interactive user's history and quarantine and the service's protected storage have separate permissions.
 
 ### Reproducing the results
 
-The [component workflow](.github/workflows/validation.yml) lists the commands and dependency versions. The [Windows application workflow](.github/workflows/windows-build.yml) checks the full Cargo application before invoking the packaging script. Status for each revision is recorded in the pull request checks. The [EICAR corpus specification](docs/technical/eicar-corpus.md) and [YARA-X specification](docs/technical/yara-x.md) define the expected results for issues #3 and #2. The [Radare2 component guide](radare2-analyzer/README.md) describes its native input and output.
+The [EICAR corpus specification](docs/technical/eicar-corpus.md) and [YARA-X specification](docs/technical/yara-x.md) record the feedback in issues #3 and #2, the input scope and expected results. The bundled marker rules alone do not establish family-specific identification. The [Radare2 component guide](radare2-analyzer/README.md) describes the analyzer and its inputs. The [installer guide](installer/README.md) describes the package build, smoke test and retained data.
 
-### Integration findings
-
-The service controller, CLI parser, EICAR self-test, TOML configuration and secure logger have component-level checks. The native controller has been cross-checked for Windows. Installing and starting the service on Windows 11 still requires a working application build. The secure logger retains verification of historical signed JSON with the original key; historical unsigned text cannot be retroactively authenticated.
-
-The core, Tauri and service currently expect different scan result shapes. The analyzer returns evidence for one file. The desktop history also needs a session identifier, counts, actions and timing. The root tests disagree about the risk label for a clean file (`Low` and `Safe`). The integrated service and monitor also use different criteria for automatic quarantine. Integration must keep skipped files, failed scans and verified clean files distinct, and record an action only after it succeeds.
-
-### Release criteria
-
-A Windows release requires a build of the core and desktop frontend from the same revision, a service that reports its actual protection state, a successful EICAR detection and quarantine/restore check through the installed application, and an installation and upgrade that preserve user data. Record the Windows 11 version, build revision and installer checksum with these results. GitHub had no published release at the time of this review.
+Windows CI uses Windows Server 2022 x64. For a production release, record the Windows 11 edition and build, installed revision, installer signature and checksum, service state, detection and quarantine round-trip, and upgrade/uninstall outcomes. There was no published GitHub release at the time of this review.
 
 ## Historical assessment from April 2025
 

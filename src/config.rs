@@ -2,8 +2,6 @@ use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 use std::fs;
 use std::io;
-#[cfg(windows)]
-use winreg::{enums::*, RegKey};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -307,6 +305,16 @@ impl Config {
 
     /// Validar configuración
     pub fn validate(&self) -> io::Result<()> {
+        if !(1..=tokio::sync::Semaphore::MAX_PERMITS).contains(&self.scan_config.max_threads) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid scan concurrency"));
+        }
+        if self.scan_config.scan_timeout == 0 || self.scan_config.max_file_size == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Scan deadline and file size limit must be positive"));
+        }
+        if self.heuristic_threshold > 100 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Heuristic threshold must be between 0 and 100"));
+        }
+
         // Verificar que las rutas existen
         if !self.yara_rules_path.exists() {
             return Err(io::Error::new(
@@ -329,7 +337,7 @@ impl Config {
     #[cfg(windows)]
     pub fn apply_system_settings(&self) -> io::Result<()> {
         // Configurar inicio automático
-        set_registry_autostart(self.autostart)?;
+        crate::service::set_autostart(self.autostart).map_err(service_io_error)?;
         
         // Configurar prioridad del proceso si está disponible
         {
@@ -349,7 +357,9 @@ impl Config {
             
             unsafe {
                 let handle = GetCurrentProcess();
-                SetPriorityClass(handle, priority);
+                if SetPriorityClass(handle, priority) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
             }
         }
         
@@ -357,41 +367,25 @@ impl Config {
     }
 }
 
-/// Configurar inicio automático en el registro de Windows
 #[cfg(windows)]
-pub fn set_registry_autostart(enable: bool) -> io::Result<()> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let path = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    let (key, _) = hkcu.create_subkey(path)?;
-    
-    let exe_path = std::env::current_exe()?;
-    let exe_path_str = exe_path.to_string_lossy().to_string();
-    
-    if enable {
-        key.set_value("AmaruAntivirus", &exe_path_str)?;
-    } else {
-        // Si existe la clave, eliminarla
-        if key.get_value::<String, _>("AmaruAntivirus").is_ok() {
-            key.delete_value("AmaruAntivirus")?;
-        }
+fn service_io_error(error: windows_service::Error) -> io::Error {
+    match error {
+        windows_service::Error::Winapi(error) => error,
+        other => io::Error::other(other),
     }
-    
-    Ok(())
 }
 
-/// Verificar si el inicio automático está habilitado
+/// Compatibilidad con clientes anteriores. El inicio automático se configura en el SCM.
+#[cfg(windows)]
+#[deprecated(note = "Use service::set_autostart for the installed Windows service")]
+pub fn set_registry_autostart(enable: bool) -> io::Result<()> {
+    crate::service::set_autostart(enable).map_err(service_io_error)
+}
+
+/// Consulta el tipo de inicio del servicio instalado en el SCM.
 #[cfg(windows)]
 pub fn is_autostart_enabled() -> io::Result<bool> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let path = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    
-    if let Ok(key) = hkcu.open_subkey(path) {
-        if let Ok(_) = key.get_value::<String, _>("AmaruAntivirus") {
-            return Ok(true);
-        }
-    }
-    
-    Ok(false)
+    crate::service::is_autostart_enabled().map_err(service_io_error)
 }
 
 #[cfg(test)]

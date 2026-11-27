@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Shield, Activity, Clock, AlertTriangle } from 'lucide-svelte';
+  import { Shield, Activity, Clock, AlertTriangle } from '@lucide/svelte';
   
   export let title = '';
   export let status = '';

@@ -31,7 +31,8 @@
       },
       "externalBin": [],
       "icon": [
-        "../../amaru-app.ico"
+        "icons/icon.ico",
+        "../public/icon.png"
       ],
       "identifier": "com.amaru.antivirus",
       "longDescription": "Amaru is an open-source antivirus for Windows with YARA-based detection, real-time protection, and advanced behavior analysis.",

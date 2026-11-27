@@ -274,6 +274,7 @@ rule invalid {
 
     let mut config = Config::default();
     config.yara_rules_path = rules_dir;
+    config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     // Verificar error en la inicialización
     let result = Amaru::new(config).await;
@@ -286,6 +287,7 @@ rule invalid {
 
     let mut config = Config::default();
     config.yara_rules_path = rules_dir;
+    config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     let amaru = Amaru::new(config).await?;
     let result = amaru.scan_file("nonexistent_file.exe").await;

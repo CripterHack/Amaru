@@ -2,7 +2,7 @@
   import type { ThreatEntry } from '$lib/stores/statusStore';
   import { invoke } from '@tauri-apps/api/tauri';
   import { formatDate } from '$lib/utils';
-  import { AlertTriangle, File, Shield, Trash2, Archive } from 'lucide-svelte';
+  import { AlertTriangle, File, Shield, Trash2, Archive } from '@lucide/svelte';
   
   export let threat: ThreatEntry;
   

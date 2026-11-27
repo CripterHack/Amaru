@@ -1,8 +1,6 @@
 # Preguntas Frecuentes (FAQ)
 
-Bienvenido a las Preguntas Frecuentes de Amaru Antivirus. Aquí encontrarás respuestas a las dudas más comunes sobre la versión experimental y su diseño.
-
-Las funciones, planes comerciales y canales de soporte descritos corresponden al alcance previsto. Consulta el estado de la versión experimental y el canal de distribución en el [README](../../README.md).
+Consulta el alcance de la versión que estás evaluando, los artefactos de desarrollo y las validaciones de Windows. [Estado del proyecto](../../status_development.md) · [Distribución](../../README.md)
 
 ## Índice
 
@@ -21,7 +19,7 @@ Las funciones, planes comerciales y canales de soporte descritos corresponden al
 
 ### ¿Qué es Amaru Antivirus?
 
-Amaru es un proyecto experimental de antivirus de código abierto para Windows 11. Combina reglas YARA y análisis estático con Radare2. El proyecto desarrolla también la monitorización de archivos y una interfaz de escritorio con Tauri y Svelte. [Estado del desarrollo](../../status_development.md)
+Amaru es un antivirus experimental de código abierto para Windows 11. El motor analiza archivos con reglas YARA, heurística y análisis estático de PE. Puede usar Radare2 cuando está instalado. El monitor de archivos alimenta el mismo motor y el escritorio Tauri/Svelte muestra sesiones y cuarentena. [Estado del desarrollo](../../status_development.md)
 
 ### ¿En qué sistemas operativos funciona Amaru Antivirus?
 
@@ -39,7 +37,7 @@ El diseño de Amaru se centra en los archivos y sus indicadores de amenaza. El c
 
 ### ¿Cómo instalo Amaru Antivirus?
 
-A fecha del 27 de noviembre de 2026 está pendiente la primera distribución publicada y validada para Windows. El repositorio describe la preparación del entorno de desarrollo y el flujo de instalación previsto. [Instalación](./getting-started.md#instalación) · [GitHub Releases](https://github.com/CripterHack/Amaru/releases)
+Consulta las versiones publicadas y los artefactos del flujo de Windows para la revisión que quieras probar. El instalador de desarrollo incluye el escritorio, el núcleo, la CLI y el catálogo. Para registrar el servicio requiere una ubicación protegida. [Instalación](./getting-started.md#instalación) · [Guía del instalador](../../installer/README.md) · [GitHub Releases](https://github.com/CripterHack/Amaru/releases)
 
 ### ¿Debo desinstalar otro antivirus antes de instalar Amaru?
 
@@ -57,19 +55,19 @@ La recuperación por correo o desde una cuenta se contempla para posibles licenc
 
 ### ¿Qué tipos de análisis ofrece Amaru?
 
-La herramienta YARA-X permite analizar un archivo local con las reglas del proyecto. La interfaz proyecta análisis rápidos, completos, personalizados, de unidades extraíbles y de arranque. La validación de esos modos en Windows se registra por separado. [Escáner local](../technical/yara-x.md) · [Guía de análisis](./analyzing.md)
+El escritorio ofrece análisis rápido, completo de la unidad del sistema y personalizado de una carpeta. La CLI analiza un archivo o directorio. YARA-X permite comprobar el catálogo con una herramienta independiente. [Guía de análisis](./analyzing.md) · [Escáner YARA-X](../technical/yara-x.md)
 
 ### ¿Con qué frecuencia debo realizar un análisis completo?
 
-La programación de análisis completos está pendiente de integración en la aplicación. La guía contempla análisis periódicos y comprobaciones tras restaurar copias de seguridad o conectar medios extraíbles. La frecuencia adecuada depende del uso del equipo.
+Elige una frecuencia según el volumen de datos, el uso del equipo y el tiempo disponible. La tarea de usuario integrada admite análisis rápidos o de una ruta concreta con frecuencia diaria o semanal. El análisis completo puede iniciarse desde el escritorio. [Análisis programados](./analyzing.md#análisis-programados)
 
 ### ¿La protección en tiempo real está siempre activa?
 
-La vigilancia continua es un objetivo del monitor. Para acreditarla en un sistema instalado se debe verificar el arranque del servicio, la recepción de eventos, el análisis y la notificación. [Guía de protección en tiempo real](./realtime-protection.md)
+El servicio carga la vigilancia según su configuración de arranque. Consulta **Real-time Protection** en el panel y verifica la carpeta que quieres vigilar. Para comprobar el recorrido completo, usa una muestra benigna en una ruta admitida y revisa el evento y la acción aplicada. [Guía del monitor](./real-time-protection.md)
 
 ### ¿Amaru protege contra ransomware?
 
-El catálogo contiene firmas de ransomware. Que una regla compile permite probarla en archivos concretos. El bloqueo del cifrado, la protección de carpetas y la recuperación mediante copias temporales requieren validación independiente. [Firmas de ransomware](../../signatures/official/ransomware.yar)
+El catálogo incluye reglas de ransomware y el motor puede encontrar indicadores estáticos en un archivo. Revisa la regla o el comportamiento que motivó la detección. La protección de carpetas frente al cifrado activo y la recuperación desde copias temporales forman parte del diseño pendiente. [Firmas de ransomware](../../signatures/official/ransomware.yar)
 
 ## Actualizaciones
 
@@ -79,7 +77,7 @@ Los cambios de desarrollo se publican en GitHub. El diseño distingue actualizac
 
 ### ¿Las actualizaciones son automáticas?
 
-El actualizador y sus pruebas forman parte del repositorio. Las preferencias para programar comprobaciones, seleccionar una frecuencia o limitar descargas según la conexión describen el flujo previsto. La configuración efectiva en un cliente instalado sigue pendiente de verificación. [Componente de actualización](../../updater)
+El comando `amaru.exe update --rules` comprueba el manifiesto y aplica un paquete más reciente si supera las verificaciones. Requiere una URL HTTPS y la clave pública confiable configurada. El motor verifica los hashes, las firmas Ed25519 y la compilación de las reglas antes de activar el catálogo. La opción `auto_update` controla qué hace la comprobación del núcleo al encontrar una versión nueva. [Actualizador](../../updater) · [Guía de actualizaciones](./updates.md)
 
 ### ¿Las actualizaciones consumen mucho ancho de banda?
 
@@ -93,11 +91,11 @@ Comprueba primero que existe un paquete publicado para tu versión. En un entorn
 
 ### ¿Qué sucede cuando Amaru detecta una amenaza?
 
-El escáner YARA-X escribe los nombres de las reglas coincidentes. El diseño de la aplicación prevé avisar, registrar la detección y aplicar una acción configurada como bloqueo o cuarentena. La secuencia completa en Windows requiere una prueba de extremo a extremo. [Escaneo con YARA-X](../technical/yara-x.md) · [Diseño de cuarentena](./quarantine.md)
+El motor genera un hallazgo. En el escritorio puedes revisarlo y confirmar su aislamiento. La vigilancia conserva el original por defecto. Con `auto_quarantine = true` intenta aislar las detecciones de riesgo alto o crítico tras verificar su contenido. [Guía de cuarentena](./quarantine.md)
 
 ### ¿Cómo recupero un archivo de la cuarentena?
 
-La guía de cuarentena describe cómo seleccionar un elemento, restaurarlo o añadir una exclusión. La recuperación tras instalar la aplicación en Windows está pendiente de validación. [Guía de cuarentena](./quarantine.md)
+En **Quarantine**, selecciona la entrada y confirma **Restore Selected**. El motor verifica el contenido y lo devuelve a la ruta original cuando está disponible. La restauración conserva las reglas de vigilancia vigentes. [Restaurar](./quarantine.md#restaurar)
 
 ### ¿Qué debo hacer si creo que tengo un falso positivo?
 
@@ -115,7 +113,7 @@ El uso eficiente de CPU, memoria y disco forma parte del diseño. La repercusió
 
 ### ¿Cómo puedo mejorar el rendimiento si noto ralentización?
 
-Para investigar una ralentización en una prueba, registra el hardware, el número y tamaño de los archivos, las reglas usadas y el tiempo transcurrido. El diseño contempla horarios, exclusiones y perfiles de rendimiento. Su efecto debe medirse en la versión evaluada.
+Para delimitar el problema, anota el hardware, la ruta, el número y tamaño de archivos, las reglas y la duración. Compara una carpeta concreta con el análisis rápido y revisa las carpetas programadas. Un análisis completo puede recorrer muchos más archivos. [Guía de análisis](./analyzing.md)
 
 ### ¿Puedo usar Amaru en un equipo con recursos limitados?
 
@@ -147,7 +145,7 @@ La propuesta comercial contempla un plazo de 30 días. La publicación de una of
 
 ### ¿Qué datos recopila Amaru?
 
-El escáner local de YARA-X lee el archivo indicado y escribe los identificadores de las reglas que coinciden. Para la aplicación, el diseño distingue registros de diagnóstico, datos de licencia y envíos opcionales de muestras o estadísticas. La evaluación de privacidad del producto completo requiere revisar qué datos procesa cada versión y dónde se conservan. [Escáner local](../../scripts/scan_yarax.py)
+El análisis nativo lee los archivos seleccionados. El escritorio almacena en el perfil local registros de sesión que pueden incluir rutas, fechas, SHA-256, detecciones y errores. La cuarentena conserva el archivo cifrado y su catálogo. La consulta de actualizaciones se comunica con el servidor configurado. [Historial local](../../gui/src-tauri/src/session.rs) · [Cuarentena](./quarantine.md) · [Actualizador](../../updater)
 
 ### ¿Amaru comparte mis datos con terceros?
 
@@ -165,7 +163,7 @@ La minimización de datos, el consentimiento para los envíos opcionales y la at
 
 ### ¿Cómo desinstalo Amaru Antivirus?
 
-El desinstalador previsto para Windows se iniciará desde Aplicaciones instaladas. La instalación y la retirada completas necesitan validación con un paquete publicado. El soporte para macOS y la herramienta avanzada de desinstalación pertenecen a propuestas posteriores. [Instalador del proyecto](../../installer/README.md)
+Cierra la aplicación y usa el desinstalador de esa instalación de Windows. Antes de quitar datos, revisa si debes recuperar archivos de la cuarentena. El instalador describe qué componentes y tareas retira y qué datos conserva según el modo elegido. [Guía del instalador](../../installer/README.md)
 
 ### ¿Qué sucede con mi licencia si desinstalo Amaru?
 
@@ -192,3 +190,7 @@ Puedes consultar incidencias, proponer mejoras y compartir resultados reproducib
 ### ¿Ofrecen soporte remoto?
 
 La propuesta de los planes Premium y Ultimate contempla sesiones de asistencia remota con autorización del usuario. Su disponibilidad, los canales para solicitar una sesión y las condiciones de acceso quedan por confirmar. [Contacto del proyecto](../support/contact.md)
+
+## Funciones y servicios previstos
+
+Los perfiles de juego, el análisis de memoria y arranque, los servicios comerciales con cuenta y facturación, la asistencia remota y el envío voluntario de muestras pertenecen al diseño del producto. Su disponibilidad, condiciones y pruebas de funcionamiento se documentarán con las versiones que los integren. [Estado de desarrollo](../../status_development.md)

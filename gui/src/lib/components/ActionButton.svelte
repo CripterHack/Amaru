@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Search, HardDrive, Download, Archive, Shield } from 'lucide-svelte';
+  import { Search, HardDrive, Download, Archive, Shield } from '@lucide/svelte';
   
   export let text = '';
   export let icon: keyof typeof icons | '' = '';

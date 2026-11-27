@@ -227,12 +227,79 @@ fn get_threat_statistics(state: State<'_, Arc<Desktop>>) -> Result<Value, String
     )
 }
 
+#[derive(Clone, Copy, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum QuarantineScope {
+    #[default]
+    Desktop,
+    Service,
+}
+
+async fn service_request<T: Send + 'static>(
+    f: impl FnOnce(&mut amaru::ipc::IpcClient) -> Result<T, amaru::ipc::IpcError> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut client = Amaru::create_ipc_client().map_err(|e| e.to_string())?;
+        f(&mut client).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn quarantine_row(
+    id: String,
+    path: PathBuf,
+    reason: String,
+    date: chrono::DateTime<chrono::Utc>,
+    size: u64,
+) -> Value {
+    json!({
+        "id": id, "fileName": path.file_name().map(|n| n.to_string_lossy()),
+        "originalPath": path, "threatType": reason, "detectionDate": date, "fileSize": size
+    })
+}
+
 #[command]
-fn get_quarantined_files(state: State<'_, Arc<Desktop>>) -> Result<Vec<Value>, String> {
-    Ok(state.engine()?.quarantine().list_entries().map_err(|e|e.to_string())?.into_iter().map(|q| json!({
-        "id":q.quarantine_name, "fileName":q.original_path.file_name().map(|n|n.to_string_lossy()),
-        "originalPath":q.original_path,"threatType":q.reason,"detectionDate":q.quarantine_date,"fileSize":q.file_size
-    })).collect())
+async fn get_quarantined_files(
+    scope: Option<QuarantineScope>,
+    state: State<'_, Arc<Desktop>>,
+) -> Result<Vec<Value>, String> {
+    match scope.unwrap_or_default() {
+        QuarantineScope::Desktop => {
+            let entries = state
+                .engine()?
+                .quarantine()
+                .list_entries()
+                .map_err(|e| e.to_string())?;
+            Ok(entries
+                .into_iter()
+                .map(|q| {
+                    quarantine_row(
+                        q.quarantine_name,
+                        q.original_path,
+                        q.reason,
+                        q.quarantine_date,
+                        q.file_size,
+                    )
+                })
+                .collect())
+        }
+        QuarantineScope::Service => {
+            let entries = service_request(|client| client.get_quarantine_list()).await?;
+            Ok(entries
+                .into_iter()
+                .map(|q| {
+                    quarantine_row(
+                        q.id,
+                        q.original_path.into(),
+                        q.reason,
+                        q.quarantine_date,
+                        q.file_size,
+                    )
+                })
+                .collect())
+        }
+    }
 }
 #[command]
 fn quarantine_detection(
@@ -260,21 +327,43 @@ fn quarantine_detection(
 }
 
 #[command]
-fn restore_quarantined_file(id: String, state: State<'_, Arc<Desktop>>) -> Result<(), String> {
-    state
-        .engine()?
-        .restore_quarantined(&id)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+async fn restore_quarantined_file(
+    id: String,
+    scope: Option<QuarantineScope>,
+    state: State<'_, Arc<Desktop>>,
+) -> Result<(), String> {
+    match scope.unwrap_or_default() {
+        QuarantineScope::Desktop => state
+            .engine()?
+            .restore_quarantined(&id)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        QuarantineScope::Service => {
+            service_request(move |client| client.restore_from_quarantine(id))
+                .await
+                .map(|_| ())
+        }
+    }
 }
+
 #[command]
-fn delete_quarantined_file(id: String, state: State<'_, Arc<Desktop>>) -> Result<(), String> {
-    state
-        .engine()?
-        .quarantine()
-        .delete_file_by_id(&id)
-        .map_err(|e| e.to_string())
+async fn delete_quarantined_file(
+    id: String,
+    scope: Option<QuarantineScope>,
+    state: State<'_, Arc<Desktop>>,
+) -> Result<(), String> {
+    match scope.unwrap_or_default() {
+        QuarantineScope::Desktop => state
+            .engine()?
+            .quarantine()
+            .delete_file_by_id(&id)
+            .map_err(|e| e.to_string()),
+        QuarantineScope::Service => {
+            service_request(move |client| client.delete_quarantined_file(id)).await
+        }
+    }
 }
+
 #[command]
 async fn update_signatures(state: State<'_, Arc<Desktop>>) -> Result<(), String> {
     state

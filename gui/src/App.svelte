@@ -26,6 +26,7 @@
   let route: Writable<string> = writable('dashboard');
   const protectionStatus = writable<ProtectionStatus | null>(null);
   let togglingProtection = false;
+  let statusRequest = 0;
 
   // Event listeners
   function setupListeners() {
@@ -35,6 +36,7 @@
         notify('Scan finished', `${payload.status}: ${payload.threats_found} finding(s)`, payload.status === 'completed' ? 'success' : 'warning')),
       listen<string>('scan-error', ({payload}) => notify('Scan error', payload, 'error')),
       listen<{ enabled: boolean; monitoredPaths: string[] }>('protection-status-changed', ({payload}) => {
+        statusRequest++;
         if ($protectionStatus) {
           $protectionStatus = { ...$protectionStatus, enabled: payload.enabled, monitored_paths: payload.monitoredPaths };
         } else { void loadProtectionStatus(); }
@@ -44,28 +46,25 @@
 
   // Load initial protection status
   async function loadProtectionStatus() {
+    const request = ++statusRequest;
     try {
-      // Get protection status from Tauri backend
       const status = await invoke<ProtectionStatus>('get_protection_status');
-      protectionStatus.set(status);
+      if (request === statusRequest) protectionStatus.set(status);
     } catch (error) {
+      if (request === statusRequest) protectionStatus.set(null);
       console.error('Failed to get protection status:', error);
-      notify(
-        'Error', 
-        `Failed to get protection status: ${error}`, 
-        'error'
-      );
     }
   }
-  
+
   // Toggle protection
   async function toggleProtection() {
     if (!$protectionStatus || togglingProtection) return;
     const enable = !$protectionStatus.enabled;
     togglingProtection = true;
+    const request = ++statusRequest;
     try {
       await invoke('toggle_protection', { enable });
-      $protectionStatus = { ...$protectionStatus, enabled: enable };
+      if (request === statusRequest && $protectionStatus) $protectionStatus = { ...$protectionStatus, enabled: enable };
     } catch (error) {
       console.error('Failed to toggle protection:', error);
       notify(
@@ -88,7 +87,10 @@
   // Initialize
   onMount(() => {
     const stopEvents = setupListeners();
-    void loadProtectionStatus();
+    const refresh = () => { if (!togglingProtection) void loadProtectionStatus(); };
+    refresh();
+    const statusTimer = setInterval(refresh, 15000);
+    window.addEventListener('focus', refresh);
 
     // Handle hash-based routing
     const handleHashChange = () => {
@@ -106,6 +108,9 @@
     const stopTheme = applyThemePreference();
 
     return () => {
+      statusRequest++;
+      clearInterval(statusTimer);
+      window.removeEventListener('focus', refresh);
       stopEvents();
       window.removeEventListener('hashchange', handleHashChange);
       stopTheme();
@@ -143,6 +148,12 @@
         <Settings />
       {:else if $route === 'help'}
         <HelpPage />
+      {:else if $route === 'about'}
+        <section class="p-8">
+          <h1 class="text-2xl font-bold">About Amaru Antivirus</h1>
+          <p class="my-3">Experimental open-source antivirus for Windows 11.</p>
+          <a href="https://github.com/CripterHack/Amaru" target="_blank" rel="noreferrer" class="text-blue-600">Project and development status</a>
+        </section>
       {:else}
         <div class="container mx-auto p-8">
           <h1 class="text-2xl font-bold mb-4">Page Not Found</h1>

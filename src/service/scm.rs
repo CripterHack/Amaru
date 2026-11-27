@@ -1,9 +1,10 @@
 //! Administración local del servicio de protección mediante el SCM de Windows.
 use std::{
+    borrow::Cow,
     ffi::OsString,
     io,
     os::windows::ffi::OsStringExt,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf, Prefix},
     process::Command,
     ptr, thread,
     time::{Duration, Instant},
@@ -41,7 +42,27 @@ fn service_info(executable_path: PathBuf) -> ServiceInfo {
 
 /// The same verifier runs in the installer before it executes anything at the destination.
 /// Embed the verifier so manual registration never evaluates a script from the install tree.
-fn validate_install_directory(directory: &Path) -> io::Result<()> {
+pub(super) fn validate_install_directory(directory: &Path) -> io::Result<()> {
+    // GetFinalPathNameByHandleW (including Rust canonicalize) returns verbatim paths.
+    // PowerShell 5.1 expects DOS paths. Check identity before using its normalization rules.
+    let mut components = directory.components();
+    let directory = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::VerbatimDisk(drive) if components.next() == Some(Component::RootDir) => {
+                let mut dos = PathBuf::from(format!("{}:\\", char::from(drive)));
+                dos.extend(components);
+                if dos.canonicalize()? != directory.canonicalize()? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Ambiguous DOS path",
+                    ));
+                }
+                Cow::Owned(dos)
+            }
+            _ => Cow::Borrowed(directory),
+        },
+        _ => Cow::Borrowed(directory),
+    };
     let mut buffer = vec![0; 32768];
     let length = unsafe {
         winapi::um::sysinfoapi::GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32)
@@ -70,14 +91,14 @@ fn validate_install_directory(directory: &Path) -> io::Result<()> {
             "-Command",
             command,
         ])
-        .env("AMARU_SERVICE_INSTALL_DIRECTORY", directory)
+        .env("AMARU_SERVICE_INSTALL_DIRECTORY", directory.as_os_str())
         .status()?;
     if status.success() {
         Ok(())
     } else {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!("Cannot register a LocalSystem service in {}: protected Program Files directory and files required (verification {status})", directory.display()),
+            format!("Protected Program Files directory and files required for LocalSystem: {} (verification {status})", directory.display()),
         ))
     }
 }
@@ -112,7 +133,8 @@ fn open(access: ServiceAccess) -> Result<Service> {
 }
 
 fn settled(service: &Service) -> Result<ServiceStatus> {
-    let start = Instant::now();
+    let mut last_progress = Instant::now();
+    let mut last_report = None;
     loop {
         let status = service.query_status()?;
         if !matches!(
@@ -124,7 +146,12 @@ fn settled(service: &Service) -> Result<ServiceStatus> {
         ) {
             return Ok(status);
         }
-        if start.elapsed() >= WAIT_LIMIT {
+        let report = (status.current_state, status.checkpoint);
+        if last_report != Some(report) {
+            last_report = Some(report);
+            last_progress = Instant::now();
+        }
+        if last_progress.elapsed() >= status.wait_hint.max(WAIT_LIMIT) {
             return Err(Error::Winapi(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
@@ -220,6 +247,14 @@ impl Drop for ScHandle {
         unsafe {
             winsvc::CloseServiceHandle(self.0);
         }
+    }
+}
+
+pub fn is_autostart_enabled() -> Result<bool> {
+    match open(ServiceAccess::QUERY_CONFIG) {
+        Ok(service) => Ok(service.query_config()?.start_type == ServiceStartType::AutoStart),
+        Err(Error::Winapi(err)) if err.raw_os_error() == Some(1060) => Ok(false),
+        Err(err) => Err(err),
     }
 }
 

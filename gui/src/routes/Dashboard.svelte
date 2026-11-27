@@ -202,7 +202,7 @@
                 type="checkbox" 
                 class="sr-only peer" 
                 aria-label={feature.name}{feature.id === 'realtime' ? '' : ' (unavailable)'}
-                checked={(feature.id === 'realtime' && enabled)} 
+                checked={(feature.id === 'realtime' && enabled)}
                 disabled={toggling || feature.id !== 'realtime' || !protectionStatus}
                 on:click|preventDefault={() => toggleFeature(feature.id)}
               >

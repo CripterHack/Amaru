@@ -6,7 +6,7 @@ El paquete incluye la interfaz Tauri/Svelte en `amaru-antivirus.exe`, el núcleo
 
 En Windows x64 se requieren el toolchain Rust MSVC del proyecto, Visual Studio Build Tools, las dependencias nativas, Node.js y npm, y NSIS 3. El servidor de compilación necesita acceso a las dependencias fijadas en los lockfiles. El equipo de destino requiere Microsoft Edge WebView2 Evergreen Runtime. El instalador comprueba el registro de WebView2 y devuelve el código 2 si falta. [Distribución oficial del runtime](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution)
 
-Desde la raíz del repositorio:
+Ejecuta este comando desde la raíz del repositorio.
 
 ```powershell
 .\scripts\build_installer.ps1 -Force
@@ -14,7 +14,7 @@ Desde la raíz del repositorio:
 
 El script instala las dependencias del frontend con `npm ci`, compila sus recursos y ejecuta Cargo con `--locked` para ambos binarios. Tauri usa `custom-protocol` para servir los recursos de la propia aplicación. Antes de ejecutar NSIS se comprueban las cabeceras PE x64 de ambos archivos. El instalador generado se mueve a `target\x86_64-pc-windows-msvc\release\AmaruAV-Setup.exe` tras una compilación correcta. [Script de construcción](../scripts/package.ps1) · [Receta NSIS](unified_installer.nsi)
 
-Con ambos ejecutables ya compilados en ese directorio, este comando construye un instalador temporal y lo descarta al acabar:
+Con ambos ejecutables ya compilados en ese directorio, este comando construye un instalador temporal y lo descarta al acabar.
 
 ```powershell
 .\scripts\build_installer.ps1 -VerifyOnly
@@ -32,12 +32,12 @@ La desinstalación detiene y elimina el servicio de esa ubicación, sus accesos 
 
 ## Prueba de la instalación
 
-En un runner Windows x64 desechable, con permisos de administrador, WebView2 instalado y sin una instalación previa de Amaru:
+En un runner Windows x64 desechable, con permisos de administrador, WebView2 instalado y sin una instalación previa de Amaru, ejecuta la prueba de instalación.
 
 ```powershell
 .\scripts\test-installed.ps1
 ```
 
-La prueba usa una carpeta propia de Program Files. Verifica los accesos directos, abre una ventana Tauri, ejecuta el autocontrol EICAR, comprueba el análisis rápido y su historial, y consulta el estado del servicio con la CLI y el SCM. Aplica sendas actualizaciones con el servicio detenido y en ejecución. Finalmente desinstala y comprueba que se conserva el contenido de prueba y se retira la tarea programada. [Prueba de instalación](../scripts/test-installed.ps1)
+La prueba usa una carpeta propia de Program Files. Verifica los accesos directos, abre una ventana Tauri, ejecuta el autocontrol EICAR, comprueba el análisis rápido y su historial, y consulta el estado del servicio con la CLI y el SCM. El canal IPC de solo lectura debe confirmar que el monitor está activo. La prueba registra y recupera análisis diarios y semanales con permisos limitados, comprueba la hora y el día y elimina la programación mediante el script que usa la GUI. También configura un destino desde la CLI, comprueba su ruta, desactiva la tarea y verifica que las preferencias de rutas rápidas del escritorio conserven el mismo SHA-256. Aplica dos actualizaciones con el servicio detenido y en ejecución. Finalmente desinstala y comprueba que se conserva el contenido de prueba y se retiran la tarea programada, los ejecutables instalados, el catálogo oficial y la carpeta de accesos directos. [Prueba de instalación](../scripts/test-installed.ps1)
 
-El paquete de desarrollo no incorpora los ejecutables opcionales de Radare2 o ClamAV ni sus bases externas. La publicación de una release firmada y las pruebas de eficacia del antivirus se siguen por separado en el [estado del proyecto](../status_development.md).
+El uso de Radare2 desde el servicio requiere que `r2.exe` resida en una carpeta protegida de Program Files. Si esa condición falla, el servicio continúa con YARA y heurística. En la GUI y la CLI interactivas se conserva el descubrimiento de Radare2 según la configuración del usuario. El paquete de desarrollo no incorpora los ejecutables opcionales de Radare2 o ClamAV ni sus bases externas. La publicación de una release firmada y las pruebas de eficacia del antivirus se siguen por separado en el [estado del proyecto](../status_development.md).

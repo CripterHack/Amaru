@@ -12,6 +12,18 @@ $cli = Join-Path $directoryPath 'amaru.exe'
 
 . (Join-Path $PSScriptRoot 'protected-directory.ps1')
 
+function Test-QuickScanArguments([string]$Arguments) {
+    if ($Arguments -ceq '--scheduled-quick-scan') { return $true }
+    if ($Arguments -cnotmatch '^--scheduled-quick-scan --path-base64 ([A-Za-z0-9+/]+={0,2})\z') { return $false }
+    $encoded = $Matches[1]
+    try {
+        $bytes = [Convert]::FromBase64String($encoded)
+        if ([Convert]::ToBase64String($bytes) -cne $encoded) { return $false }
+        $path = [Text.UTF8Encoding]::new($false,$true).GetString($bytes)
+        return $path.IndexOf([char]0) -lt 0 -and $path -match '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)'
+    } catch { return $false }
+}
+
 function Get-OwnedService {
     $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='$name'"
     if ($svc) {
@@ -41,9 +53,9 @@ try {
     $svc = Get-OwnedService
     if ($Phase -eq 'Remove') {
         # Inspect task actions as well as names before removing a per-user schedule.
-        foreach ($task in Get-ScheduledTask -TaskPath '\' | Where-Object { $_.TaskName -match '^Amaru-QuickScan-S-1-\d+(?:-\d+)+$' }) {
+        foreach ($task in Get-ScheduledTask | Where-Object { $_.TaskPath -eq '\' -and $_.TaskName -match '^Amaru-QuickScan-S-1-\d+(?:-\d+)+$' }) {
             $actions = @($task.Actions)
-            if ($actions.Count -eq 1 -and $actions[0].Execute -and $actions[0].Execute.Trim('"') -eq $desktop -and $actions[0].Arguments -ceq '--scheduled-quick-scan') {
+            if ($actions.Count -eq 1 -and $actions[0].Execute -and $actions[0].Execute.Trim('"') -eq $desktop -and (Test-QuickScanArguments $actions[0].Arguments)) {
                 Unregister-ScheduledTask -TaskPath $task.TaskPath -TaskName $task.TaskName -Confirm:$false
             }
         }

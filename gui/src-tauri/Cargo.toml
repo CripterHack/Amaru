@@ -19,7 +19,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["sync", "rt-multi-thread"] }
 walkdir = "2"
 tempfile = "3"
-dirs = "5"
 sysinfo = "0.29"
 
 [target.'cfg(windows)'.dependencies]

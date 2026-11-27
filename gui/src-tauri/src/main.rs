@@ -3,8 +3,6 @@
 #[cfg(windows)]
 mod desktop;
 #[cfg(any(windows, test))]
-mod quick_paths;
-#[cfg(any(windows, test))]
 mod session;
 
 #[cfg(windows)]

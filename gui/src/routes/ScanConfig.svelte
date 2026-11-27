@@ -3,7 +3,7 @@
   import { invoke } from '@tauri-apps/api/tauri';
   import { open } from '@tauri-apps/api/dialog';
 
-  type Schedule = { frequency: 'daily' | 'weekly'; day: number; time: string };
+  type Schedule = { frequency: 'daily' | 'weekly'; day: number; time: string; path?: string | null };
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   let paths: string[] = [];
   let pathsReady = false;
@@ -83,6 +83,11 @@
     <fieldset disabled={!scheduleReady || savingSchedule} class="space-y-4">
       <label class="block"><input type="checkbox" bind:checked={enabled}> Enable scheduled scans</label>
       {#if enabled}
+        {#if schedule.path}
+          <p>Scheduled location <strong class="break-all">{schedule.path}</strong>
+            <button type="button" class="underline" on:click={() => schedule = {...schedule, path: null}}>Use quick scan folders</button>
+          </p>
+        {/if}
         <label class="block">Frequency
           <select bind:value={schedule.frequency} class="border rounded p-1 dark:bg-gray-700">
             <option value="daily">Daily</option><option value="weekly">Weekly</option>
