@@ -53,6 +53,8 @@ vi.mock('@tauri-apps/api/tauri', () => ({
             status: 'success'
           }
         ]);
+      case 'get_scan_progress':
+        return Promise.resolve(null);
       case 'get_scan_history':
         return Promise.resolve([]);
       case 'get_system_resources':
@@ -95,7 +97,7 @@ describe('Dashboard Component', () => {
   test('toggles protection using the application sidebar', async () => {
     render(App);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_protection_status'));
-    await fireEvent.click(screen.getByRole('checkbox', { name: 'Protection' }));
+    await fireEvent.click(await screen.findByRole('checkbox', { name: 'Protection' }));
     expect(invoke).toHaveBeenCalledWith('toggle_protection', { enable: false });
     expect(await screen.findByText('At Risk')).toBeInTheDocument();
   });

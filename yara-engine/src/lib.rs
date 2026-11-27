@@ -141,6 +141,11 @@ impl YaraEngine {
         Ok(Self { config: YaraConfig::default(), rules: Arc::new(rules), metadata, rules_dir })
     }
 
+    /// Sets the scan deadline used by both file and memory scans.
+    pub fn set_scan_timeout(&mut self, timeout: std::time::Duration) {
+        self.config.timeout_ms = timeout.as_millis().clamp(1, u64::MAX as u128) as u64;
+    }
+
     fn timeout_seconds(&self) -> i32 {
         self.config.timeout_ms.div_ceil(1000).min(i32::MAX as u64) as i32
     }

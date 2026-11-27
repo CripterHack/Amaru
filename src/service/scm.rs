@@ -2,7 +2,9 @@
 use std::{
     ffi::OsString,
     io,
-    path::PathBuf,
+    os::windows::ffi::OsStringExt,
+    path::{Path, PathBuf},
+    process::Command,
     ptr, thread,
     time::{Duration, Instant},
 };
@@ -37,12 +39,62 @@ fn service_info(executable_path: PathBuf) -> ServiceInfo {
     }
 }
 
+/// The same verifier runs in the installer before it executes anything at the destination.
+/// Embed the verifier so manual registration never evaluates a script from the install tree.
+fn validate_install_directory(directory: &Path) -> io::Result<()> {
+    let mut buffer = vec![0; 32768];
+    let length = unsafe {
+        winapi::um::sysinfoapi::GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32)
+    } as usize;
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length >= buffer.len() {
+        return Err(io::Error::other(
+            "Cannot resolve the Windows system directory",
+        ));
+    }
+    let powershell = PathBuf::from(OsString::from_wide(&buffer[..length]))
+        .join(r"WindowsPowerShell\v1.0\powershell.exe");
+    let command = concat!(
+        "$ErrorActionPreference = 'Stop'\n",
+        "$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')\n",
+        include_str!("../../installer/protected-directory.ps1"),
+        "\nif (Test-ProtectedDirectory -Directory $env:AMARU_SERVICE_INSTALL_DIRECTORY) { exit 0 }\nexit 20",
+    );
+    let status = Command::new(powershell)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ])
+        .env("AMARU_SERVICE_INSTALL_DIRECTORY", directory)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("Cannot register a LocalSystem service in {}: protected Program Files directory and files required (verification {status})", directory.display()),
+        ))
+    }
+}
+
 pub fn install_service() -> Result<()> {
+    let executable = std::env::current_exe().map_err(Error::Winapi)?;
+    let directory = executable.parent().ok_or_else(|| {
+        Error::Winapi(io::Error::other(
+            "Cannot resolve service installation directory",
+        ))
+    })?;
+    validate_install_directory(directory).map_err(Error::Winapi)?;
     let manager = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
     )?;
-    let info = service_info(std::env::current_exe().map_err(Error::Winapi)?);
+    let info = service_info(executable);
     let service =
         manager.create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::DELETE)?;
     if let Err(err) = service
@@ -213,6 +265,12 @@ pub fn set_autostart(enabled: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn registration_refuses_the_writable_temp_directory() {
+        let result = validate_install_directory(&std::env::temp_dir()).unwrap_err();
+        assert_eq!(result.kind(), io::ErrorKind::PermissionDenied);
+    }
+
     #[test]
     fn scm_launches_the_installed_executable_in_service_mode() {
         let exe = PathBuf::from(r"C:\Program Files\Amaru\amaru.exe");

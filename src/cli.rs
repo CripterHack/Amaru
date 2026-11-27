@@ -5,6 +5,10 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub(crate) struct Cli {
+    /// Path to the Amaru configuration file
+    #[arg(long, global = true)]
+    pub(crate) config: Option<PathBuf>,
+
     #[command(subcommand)]
     pub(crate) command: Commands,
 }
@@ -12,11 +16,7 @@ pub(crate) struct Cli {
 #[derive(Subcommand)]
 pub(crate) enum Commands {
     /// Check the EICAR rule using the configured signatures
-    TestEicar {
-        /// Path to the Amaru configuration file
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
+    TestEicar,
 
     /// Scan files or directories
     Scan {
@@ -25,15 +25,15 @@ pub(crate) enum Commands {
         path: PathBuf,
 
         /// Scan recursively
-        #[arg(short, long, default_value_t = true)]
+        #[arg(short, long, default_value_t = true, action=clap::ArgAction::Set, num_args=0..=1, default_missing_value="true", require_equals=true)]
         recursive: bool,
 
         /// Use heuristic analysis
-        #[arg(short = 'H', long, default_value_t = true)]
-        heuristic: bool,
+        #[arg(short = 'H', long, action=clap::ArgAction::Set, num_args=0..=1, default_missing_value="true", require_equals=true)]
+        heuristic: Option<bool>,
 
         /// Use Radare2 for static analysis
-        #[arg(short = 'd', long, default_value_t = false)]
+        #[arg(short = 'd', long, default_value_t = false, action=clap::ArgAction::Set, num_args=0..=1, default_missing_value="true", require_equals=true)]
         radare2: bool,
     },
 
@@ -55,7 +55,7 @@ pub(crate) enum Commands {
         clamav: bool,
 
         /// Update heuristic patterns
-        #[arg(short = 'H', long, default_value_t = false)]
+        #[arg(short = 'H', long, default_value_t = false, action=clap::ArgAction::Set, num_args=0..=1, default_missing_value="true", require_equals=true)]
         heuristic: bool,
     },
 
@@ -73,12 +73,12 @@ pub(crate) enum Commands {
         file: PathBuf,
 
         /// Use Radare2
-        #[arg(short, long, default_value_t = true)]
+        #[arg(short, long, default_value_t = true, action=clap::ArgAction::Set, num_args=0..=1, default_missing_value="true", require_equals=true)]
         radare2: bool,
 
         /// Use heuristic analysis
-        #[arg(short = 'H', long, default_value_t = true)]
-        heuristic: bool,
+        #[arg(short = 'H', long, action=clap::ArgAction::Set, num_args=0..=1, default_missing_value="true", require_equals=true)]
+        heuristic: Option<bool>,
     },
 
     /// Internal Windows Service Control Manager entry point
@@ -95,7 +95,7 @@ pub(crate) enum Commands {
     /// Configure autostart options
     Autostart {
         /// Enable or disable autostart
-        #[arg(short, long)]
+        #[arg(short, long, action=clap::ArgAction::Set, num_args=0..=1, default_missing_value="true", require_equals=true)]
         enable: bool,
     },
 }
@@ -137,7 +137,8 @@ mod tests {
             ),
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
-            assert!(matches!(cli.command, Commands::TestEicar { config } if config == expected));
+            assert!(matches!(cli.command, Commands::TestEicar));
+            assert_eq!(cli.config, expected);
         }
         assert!(Cli::try_parse_from(["amaru", "test-eicar", "--unknown"]).is_err());
     }

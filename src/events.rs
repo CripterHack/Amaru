@@ -4,6 +4,11 @@ use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
+    RealtimeProtectionStatusChanged {
+        enabled: bool,
+        monitored_paths: Vec<PathBuf>,
+        timestamp: DateTime<Utc>,
+    },
     /// Evento de detección de amenaza
     ThreatDetected {
         /// Ruta del archivo
@@ -199,32 +204,30 @@ pub enum ErrorCode {
 }
 
 /// Canal de eventos para comunicación entre componentes
+#[derive(Clone, Default)]
 pub struct EventChannel {
-    sender: crossbeam_channel::Sender<Event>,
-    receiver: crossbeam_channel::Receiver<Event>,
+    subscribers: std::sync::Arc<parking_lot::Mutex<Vec<crossbeam_channel::Sender<Event>>>>,
 }
 
 impl EventChannel {
-    /// Crear un nuevo canal de eventos
     pub fn new() -> Self {
-        let (sender, receiver) = crossbeam_channel::unbounded();
-        Self { sender, receiver }
+        Self::default()
     }
-    
-    /// Obtener un clon del sender
-    pub fn sender(&self) -> crossbeam_channel::Sender<Event> {
-        self.sender.clone()
-    }
-    
-    /// Obtener un clon del receiver
-    pub fn receiver(&self) -> crossbeam_channel::Receiver<Event> {
-        self.receiver.clone()
-    }
-}
 
-impl Default for EventChannel {
-    fn default() -> Self {
-        Self::new()
+    pub fn sender(&self) -> Self {
+        self.clone()
+    }
+
+    pub fn send(&self, event: Event) -> Result<(), crossbeam_channel::SendError<Event>> {
+        self.subscribers.lock().retain(|tx| tx.send(event.clone()).is_ok());
+        Ok(())
+    }
+
+    /// Each subscriber receives every event emitted after it subscribes.
+    pub fn receiver(&self) -> crossbeam_channel::Receiver<Event> {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        self.subscribers.lock().push(sender);
+        receiver
     }
 }
 
@@ -237,6 +240,8 @@ mod tests {
         let channel = EventChannel::new();
         let sender = channel.sender();
         let receiver = channel.receiver();
+        let second = channel.receiver();
+        drop(channel.receiver());
         
         // Enviar evento
         let event = Event::ThreatDetected {
@@ -259,7 +264,8 @@ mod tests {
         sender.send(event.clone()).unwrap();
         
         // Recibir evento
-        let received = receiver.recv().unwrap();
+        let received = receiver.try_recv().unwrap();
+        assert!(matches!(second.try_recv(), Ok(Event::ThreatDetected { .. })));
         
         match (event, received) {
             (

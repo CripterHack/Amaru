@@ -1,25 +1,25 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use std::time::Duration;
+mod support;
 
-fn benchmark_analysis(c: &mut Criterion) {
-    let analyzer = BehaviorAnalyzer::new().unwrap();
-    let test_files = generate_test_files(100).unwrap();
+use amaru::BehaviorAnalyzer;
+use std::{
+    hint::black_box,
+    time::{Duration, Instant},
+};
 
-    let mut group = c.benchmark_group("behavior_analysis");
-    group.measurement_time(Duration::from_secs(10));
-    group.sample_size(10);
-
-    group.bench_function("parallel_analysis", |b| {
-        b.iter(|| {
-            for file in &test_files {
-                let hash = calculate_file_hash(black_box(file)).unwrap();
-                analyzer.analyze_optimized(&std::fs::read(file).unwrap(), &hash).unwrap();
-            }
-        })
-    });
-
-    group.finish();
+#[test]
+fn benchmark_parallel_behavior_analysis() {
+    let analyzer = BehaviorAnalyzer::new();
+    let samples: Vec<_> = (0..100u8)
+        .map(|index| support::import_fixture(support::INJECTION, &[index]))
+        .collect();
+    let start = Instant::now();
+    for _ in 0..10 {
+        for sample in &samples {
+            assert!(!analyzer
+                .analyze_optimized(black_box(sample), "")
+                .unwrap()
+                .is_empty());
+        }
+    }
+    assert!(start.elapsed() < Duration::from_secs(10));
 }
-
-criterion_group!(benches, benchmark_analysis);
-criterion_main!(benches); 

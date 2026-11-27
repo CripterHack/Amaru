@@ -45,6 +45,7 @@ VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
 ; Variables
 Var PreviousInstallDir
 Var Previous32Dir
+Var PreviousService
 
 ; Older installers stored InstallLocation with quotes. Treat it only as data.
 Function ReadInstallLocation
@@ -90,11 +91,8 @@ Function CheckUpgradeLocation
 FunctionEnd
 
 ; Configuración de la interfaz
+AllowSkipFiles off
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_RUN "$INSTDIR\amaru.exe"
-!define MUI_FINISHPAGE_RUN_NOTCHECKED
-!define MUI_FINISHPAGE_RUN_TEXT "Iniciar Amaru Antivirus ahora"
-
 ; Usar iconos personalizados si están disponibles
 !define MUI_ICON "amaru-app.ico"
 !define MUI_UNICON "amaru-app.ico"
@@ -117,27 +115,81 @@ FunctionEnd
 !insertmacro MUI_LANGUAGE "Spanish"
 
 ; Función de inicialización
-Function .onInit
-  ${IfNot} ${RunningX64}
-    MessageBox MB_OK|MB_ICONSTOP "Este instalador requiere Windows de 64 bits."
-    Abort
-  ${EndIf}
-  ; Asegurar que no haya múltiples instancias del instalador
-  System::Call 'kernel32::CreateMutexA(i 0, i 0, t "AmaruAntivirusInstaller") i .r1 ?e'
-  Pop $R0
-  ${If} $R0 != 0
-    MessageBox MB_OK|MB_ICONEXCLAMATION "El instalador de Amaru Antivirus ya está en ejecución."
-    Abort
-  ${EndIf}
+!define WEBVIEW_CLIENT "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 
+Function CheckWebView
+  SetRegView 32
+  ReadRegStr $0 HKLM "${WEBVIEW_CLIENT}" "pv"
+  ${If} $0 == ""
+  ${OrIf} $0 == "0.0.0.0"
+    ReadRegStr $0 HKCU "${WEBVIEW_CLIENT}" "pv"
+  ${EndIf}
+  SetRegView 64
+  ${If} $0 == ""
+  ${OrIf} $0 == "0.0.0.0"
+    MessageBox MB_OK|MB_ICONSTOP "Instale Microsoft Edge WebView2 Evergreen Runtime antes de instalar el escritorio Amaru." /SD IDOK
+    SetErrorLevel 2
+    Abort
+  ${EndIf}
+FunctionEnd
+
+!macro ServiceControl PHASE
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File "/oname=service-control.ps1" "service-control.ps1"
+  File "/oname=protected-directory.ps1" "protected-directory.ps1"
+  ClearErrors
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\service-control.ps1" -Phase ${PHASE} -Directory "$INSTDIR" -Previous "$PreviousService"'
+  Pop $0
+!macroend
+
+!macro LockSetup
+; Asegurar que no haya múltiples instancias del instalador
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "AmaruAntivirusInstaller") p .r1 ?e'
+  Pop $R0
+  ${If} $1 == 0
+  ${OrIf} $R0 == 183
+    MessageBox MB_OK|MB_ICONEXCLAMATION "El instalador de Amaru Antivirus ya está en ejecución." /SD IDOK
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
+!macroend
+
+Function un.onInit
+  !insertmacro LockSetup
+FunctionEnd
+
+Function .onInit
+  SetShellVarContext all
+  Call CheckWebView
+  ${IfNot} ${RunningX64}
+    MessageBox MB_OK|MB_ICONSTOP "Este instalador requiere Windows de 64 bits." /SD IDOK
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
+  !insertmacro LockSetup
   Call SelectUpgradeLocation
 FunctionEnd
 
 ; Sección principal de instalación
 Section "Instalación" SEC_MAIN
   Call CheckUpgradeLocation
+  StrCpy $PreviousService "New"
+  !insertmacro ServiceControl Prepare
+  ${If} $0 == 11
+    StrCpy $PreviousService "Running"
+  ${ElseIf} $0 == 10
+    StrCpy $PreviousService "Stopped"
+  ${ElseIf} $0 == 20
+    StrCpy $PreviousService "Skip"
+    DetailPrint "Instalación de escritorio y CLI. El servicio requiere una ruta protegida en Program Files."
+  ${ElseIf} $0 != 0
+    SetErrorLevel 1
+    Abort "No se pudo preparar el servicio Amaru."
+  ${EndIf}
   SetOutPath "$INSTDIR"
   File "${EXEDIR}\amaru.exe"
+  File "${EXEDIR}\amaru-antivirus.exe"
   SetOverwrite off
   File "..\config.toml"
   SetOverwrite on
@@ -176,23 +228,36 @@ Section "Instalación" SEC_MAIN
   ; Volver a la carpeta principal
   SetOutPath "$INSTDIR"
   
-  ; Crear uninstalador mejorado
   WriteUninstaller "$INSTDIR\uninstall.exe"
+  ${If} $PreviousService != "Skip"
+    !insertmacro ServiceControl Install
+    ${If} $0 != 0
+      SetErrorLevel 1
+      Abort "No se pudo iniciar o actualizar el servicio Amaru. Revise el registro del instalador."
+    ${EndIf}
+  ${EndIf}
+  SetOutPath "$INSTDIR"
+  ; Crear uninstalador mejorado
+
   
   ; Registrar información del programa
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "Publisher" "${PUBLISHER}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayIcon" "$\"$INSTDIR\amaru.exe$\""
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayIcon" "$\"$INSTDIR\amaru-antivirus.exe$\""
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoModify" "1"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoRepair" "1"
   
-  ; Registrar en el inicio automático - dos métodos para mayor seguridad
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}" "$\"$INSTDIR\amaru.exe$\""
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}" "$\"$INSTDIR\amaru.exe$\""
-  
+  ; SCM administra el inicio de la protección. Retirar las entradas heredadas de la GUI.
+  SetRegView 32
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
+  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
+  SetRegView 64
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
+  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
+
   ; Migrate registration only after writing its replacement in the native view.
   ${If} $Previous32Dir != ""
     SetRegView 32
@@ -201,19 +266,32 @@ Section "Instalación" SEC_MAIN
     SetRegView 64
   ${EndIf}
 
+  ; El instalador anterior creaba los accesos para el usuario elevado.
+  SetShellVarContext current
+  Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_NAME}\Desinstalar ${PRODUCT_NAME}.lnk"
+  RMDir "$SMPROGRAMS\${PRODUCT_NAME}"
+  SetShellVarContext all
   ; Crear accesos directos
   CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
-  CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\amaru.exe"
+  CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\amaru-antivirus.exe"
   CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\Desinstalar ${PRODUCT_NAME}.lnk" "$INSTDIR\uninstall.exe"
-  CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\amaru.exe"
+  CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\amaru-antivirus.exe"
 SectionEnd
 
 ; Sección de desinstalación
 Section "Uninstall"
   SetRegView 64
-  ; Detener el proceso antes de desinstalar
-  ExecWait '"$SYSDIR\taskkill.exe" /F /IM amaru.exe'
-  
+  SetShellVarContext all
+  StrCpy $PreviousService "New"
+  !insertmacro ServiceControl Remove
+  ${If} $0 != 0
+    SetErrorLevel 1
+    Abort "No se pudo detener o eliminar el servicio Amaru."
+  ${EndIf}
+  SetOutPath "$TEMP"
+
   ; Eliminar accesos directos
   Delete "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk"
   Delete "$SMPROGRAMS\${PRODUCT_NAME}\Desinstalar ${PRODUCT_NAME}.lnk"
@@ -221,9 +299,19 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\${PRODUCT_NAME}"
   
   ; Borrar archivos principales
-  Delete "$INSTDIR\amaru.exe"
+  ClearErrors
+  ${If} ${FileExists} "$INSTDIR\amaru.exe"
+    Delete "$INSTDIR\amaru.exe"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\amaru-antivirus.exe"
+    Delete "$INSTDIR\amaru-antivirus.exe"
+  ${EndIf}
+  ${If} ${Errors}
+    SetErrorLevel 1
+    Abort "Cierre Amaru y vuelva a ejecutar la desinstalación."
+  ${EndIf}
   Delete "$INSTDIR\uninstall.exe"
-  RMDir /r "$INSTDIR\modules"
+  RMDir "$INSTDIR\modules"
   RMDir /r "$INSTDIR\signatures\official"
 
   ; Silent uninstall keeps recoverable user data. An interactive purge requires consent.
@@ -239,8 +327,10 @@ Section "Uninstall"
   SetShellVarContext current
   keep_data:
 
-  ; Limpiar el directorio principal
+  ; Dejar archivos de usuario residuales sin provocar un error de salida.
+  ClearErrors
   RMDir "$INSTDIR"
+  ClearErrors
   
   ; Limpiar registros completamente
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"

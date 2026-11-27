@@ -129,7 +129,7 @@ The intended desktop workflow on Windows 11 has three steps.
 3. Schedule scans and configure protection settings through the Settings page.
 
 ### Command Line Interface
-The CLI routes the EICAR self-test and Windows service management commands. General scan, analysis and update dispatch are pending. These examples document the intended syntax. See [src/main.rs](src/main.rs).
+Use `scan` to check files or directories and `analyze` for a detailed report on one file. Scans are recursive by default. Pass `--recursive=false` for a single directory level or `--heuristic=false` to disable heuristics explicitly. Detailed analysis requests Radare2 by default and accepts `--radare2=false` to use the built-in engines alone. Use `--config <path>` to select a TOML configuration.
 
 ```powershell
 # Scan a specific file
@@ -150,6 +150,8 @@ amaru analyze --file C:\suspicious\file.exe --radare2 --heuristic
 # Check service status
 amaru service --action status
 ```
+
+A signed rules update requires a configured server and a trusted Ed25519 public key in `update_config.public_key`. Use `update --clamav` to run the installed ClamAV `freshclam` utility, and `reload --rules` to ask the active Windows service to reload its on-disk rules. Built-in heuristic patterns ship with the application.
 
 The bundled rules are in [signatures/official](signatures/official) and [signatures/custom](signatures/custom). For an on-demand scan with the optional YARA-X tool, see the [command, output and exit codes](docs/technical/yara-x.md).
 

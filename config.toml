@@ -8,3 +8,7 @@ min_confidence = 75
 use_mimalloc = true
 compress_yara_rules = true
 max_threads = 4 
+
+[quarantine_config]
+# Enable to isolate verified high- or critical-risk detections during monitoring.
+auto_quarantine = false

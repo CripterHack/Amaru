@@ -75,12 +75,13 @@ dependencies = [
  "env_logger",
  "futures",
  "futures-locks",
+ "hex",
  "hmac",
  "libmimalloc-sys",
  "log",
  "mimalloc",
- "named_pipe",
  "num_cpus",
+ "object",
  "parking_lot",
  "radare2-analyzer",
  "rand",
@@ -96,8 +97,10 @@ dependencies = [
  "tokio",
  "toml",
  "updater",
+ "walkdir",
  "winapi",
  "windows-service",
+ "windows-sys 0.59.0",
  "winreg",
  "yara-engine",
 ]
@@ -1436,15 +1439,6 @@ dependencies = [
  "libc",
  "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "named_pipe"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad9c443cce91fc3e12f017290db75dde490d685cdaaf508d7159d7cf41f0eb2b"
-dependencies = [
- "winapi",
 ]
 
 [[package]]
@@ -3057,6 +3051,7 @@ dependencies = [
  "env_logger",
  "log",
  "md5",
+ "object",
  "rayon",
  "regex",
  "serde",

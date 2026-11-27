@@ -1,13 +1,9 @@
-use amaru::{
-    Amaru, Config, RiskLevel, ThreatType,
-    behavior::{MaliciousBehaviorType, MaliciousBehavior},
-};
+mod support;
+use amaru::{Amaru, Config, RiskLevel, MaliciousBehaviorType, BehaviorAnalyzer};
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::PathBuf;
 use tempfile::tempdir;
 use tokio;
-use criterion::{black_box, criterion_group, Criterion};
 use std::time::Instant;
 
 #[tokio::test]
@@ -40,7 +36,7 @@ rule test_malware {
         VirtualAllocEx\x00\
         WriteProcessMemory\x00\
     ";
-    File::create(&malware_file)?.write_all(malware_content)?;
+    File::create(&malware_file)?.write_all(&support::import_fixture(support::INJECTION, malware_content))?;
 
     // Configurar y crear instancia de Amaru
     let mut config = Config::default();
@@ -48,7 +44,7 @@ rule test_malware {
     config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     let amaru = Amaru::new(config).await?;
-    let result = amaru.scan_file(&malware_file).await?;
+    let result = amaru.scan_file_with_options(&malware_file, true, false).await?;
 
     // Verificar detección
     assert!(result.risk_level >= RiskLevel::High);
@@ -88,7 +84,7 @@ rule test_ransomware {
         BCryptEncrypt\x00\
         vssadmin.exe delete shadows\x00\
     ";
-    File::create(&ransomware_file)?.write_all(ransomware_content)?;
+    File::create(&ransomware_file)?.write_all(&support::import_fixture(&[support::ENCRYPTION, support::PERSISTENCE].concat(), ransomware_content))?;
 
     // Configurar y crear instancia de Amaru
     let mut config = Config::default();
@@ -96,7 +92,7 @@ rule test_ransomware {
     config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     let amaru = Amaru::new(config).await?;
-    let result = amaru.scan_file(&ransomware_file).await?;
+    let result = amaru.scan_file_with_options(&ransomware_file, true, false).await?;
 
     // Verificar detección de ransomware
     assert_eq!(result.risk_level, RiskLevel::Critical);
@@ -135,6 +131,7 @@ rule test_realtime {
     config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     let mut amaru = Amaru::new(config).await?;
+    let receiver = amaru.event_receiver();
     
     // Habilitar protección en tiempo real
     amaru.enable_realtime_protection().await?;
@@ -147,7 +144,6 @@ rule test_realtime {
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     // Verificar eventos
-    let receiver = amaru.event_receiver();
     let mut threats_detected = false;
     while let Ok(event) = receiver.try_recv() {
         if let amaru::Event::ThreatDetected { .. } = event {
@@ -184,7 +180,7 @@ async fn test_behavior_analysis() -> Result<(), Box<dyn std::error::Error>> {
         InternetOpen\x00\
         WSASend\x00\
     ";
-    File::create(&malicious_file)?.write_all(content)?;
+    File::create(&malicious_file)?.write_all(&support::import_fixture(&[support::INJECTION, support::PERSISTENCE, support::ENVIRONMENT, support::KEY_INPUT, support::NETWORK].concat(), content))?;
 
     // Configurar Amaru
     let mut config = Config::default();
@@ -192,7 +188,7 @@ async fn test_behavior_analysis() -> Result<(), Box<dyn std::error::Error>> {
     config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     let amaru = Amaru::new(config).await?;
-    let result = amaru.scan_file(&malicious_file).await?;
+    let result = amaru.scan_file_with_options(&malicious_file, true, false).await?;
 
     // Verificar detección de comportamientos
     let behaviors = result.behaviors.as_ref().expect("No se detectaron comportamientos");
@@ -300,16 +296,7 @@ rule invalid {
 
 #[tokio::test]
 async fn test_pe_analysis() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = tempdir()?;
-    let rules_dir = temp_dir.path().join("rules");
-    fs::create_dir(&rules_dir)?;
-
-    // Configurar Amaru
-    let mut config = Config::default();
-    config.yara_rules_path = rules_dir;
-    config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
-
-    let amaru = Amaru::new(config).await?;
+    let analyzer = BehaviorAnalyzer::new();
 
     // Crear archivo PE con secciones sospechosas
     let sections = vec![
@@ -327,21 +314,21 @@ async fn test_pe_analysis() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     // Analizar secciones
-    let section_behaviors = amaru.analyze_pe_sections(&sections).await?;
+    let section_behaviors = analyzer.analyze_sections_optimized(&sections,"sample-sections").await;
     assert!(!section_behaviors.is_empty());
-    assert!(section_behaviors.iter().any(|b| matches!(b.behavior_type, MaliciousBehaviorType::DetectionEvasion)));
+    assert!(section_behaviors.iter().any(|b| matches!(b.behavior_type, MaliciousBehaviorType::Packing) && b.evidence.contains_key("high_entropy_sections")));
 
     // Verificar caché de secciones
-    let cached_sections = amaru.analyze_pe_sections(&sections).await?;
+    let cached_sections = analyzer.analyze_sections_optimized(&sections,"sample-sections").await;
     assert_eq!(section_behaviors, cached_sections);
 
     // Analizar recursos
-    let resource_behaviors = amaru.analyze_pe_resources(&resources).await?;
+    let resource_behaviors = analyzer.analyze_resources(&resources,"sample-resources").await;
     assert!(!resource_behaviors.is_empty());
     assert!(resource_behaviors.iter().any(|b| matches!(b.behavior_type, MaliciousBehaviorType::DetectionEvasion)));
 
     // Verificar caché de recursos
-    let cached_resources = amaru.analyze_pe_resources(&resources).await?;
+    let cached_resources = analyzer.analyze_resources(&resources,"sample-resources").await;
     assert_eq!(resource_behaviors, cached_resources);
 
     Ok(())
@@ -367,7 +354,7 @@ async fn test_behavior_correlations() -> Result<(), Box<dyn std::error::Error>> 
         RegSetValueEx\x00\
         CurrentVersion\\Run\x00\
     ";
-    File::create(&malicious_file)?.write_all(content)?;
+    File::create(&malicious_file)?.write_all(&support::import_fixture(&[support::INJECTION, support::NETWORK, support::ENVIRONMENT, support::ENCRYPTION, support::PERSISTENCE].concat(), content))?;
 
     // Configurar Amaru
     let mut config = Config::default();
@@ -375,7 +362,7 @@ async fn test_behavior_correlations() -> Result<(), Box<dyn std::error::Error>> 
     config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     let amaru = Amaru::new(config).await?;
-    let result = amaru.scan_file_with_correlations(&malicious_file).await?;
+    let result = amaru.scan_file_with_options(&malicious_file, true, false).await?;
 
     // Verificar detección de comportamientos correlacionados
     let behaviors = result.behaviors.as_ref().expect("No se detectaron comportamientos");
@@ -416,7 +403,7 @@ async fn test_advanced_evasion_detection() -> Result<(), Box<dyn std::error::Err
         vmware.exe\x00\
         vbox.exe\x00\
     ";
-    File::create(&evasive_file)?.write_all(content)?;
+    File::create(&evasive_file)?.write_all(&support::import_fixture(support::ENVIRONMENT, content))?;
 
     // Configurar Amaru
     let mut config = Config::default();
@@ -424,7 +411,7 @@ async fn test_advanced_evasion_detection() -> Result<(), Box<dyn std::error::Err
     config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     let amaru = Amaru::new(config).await?;
-    let result = amaru.scan_file(&evasive_file).await?;
+    let result = amaru.scan_file_with_options(&evasive_file, true, false).await?;
 
     // Verificar detección de evasión avanzada
     let behaviors = result.behaviors.as_ref().expect("No se detectaron comportamientos");
@@ -455,7 +442,7 @@ async fn test_advanced_persistence() -> Result<(), Box<dyn std::error::Error>> {
         Shell32.dll\x00\
         StartupItems\x00\
     ";
-    File::create(&persistence_file)?.write_all(content)?;
+    File::create(&persistence_file)?.write_all(&support::import_fixture(support::PERSISTENCE, content))?;
 
     // Configurar Amaru
     let mut config = Config::default();
@@ -463,7 +450,7 @@ async fn test_advanced_persistence() -> Result<(), Box<dyn std::error::Error>> {
     config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     let amaru = Amaru::new(config).await?;
-    let result = amaru.scan_file(&persistence_file).await?;
+    let result = amaru.scan_file_with_options(&persistence_file, true, false).await?;
 
     // Verificar detección de persistencia avanzada
     let behaviors = result.behaviors.as_ref().expect("No se detectaron comportamientos");
@@ -498,7 +485,7 @@ async fn test_command_and_control() -> Result<(), Box<dyn std::error::Error>> {
         PR_Write\x00\
         URLDownloadToFile\x00\
     ";
-    File::create(&cnc_file)?.write_all(content)?;
+    File::create(&cnc_file)?.write_all(&support::import_fixture(support::NETWORK, content))?;
 
     // Configurar Amaru
     let mut config = Config::default();
@@ -506,7 +493,7 @@ async fn test_command_and_control() -> Result<(), Box<dyn std::error::Error>> {
     config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
 
     let amaru = Amaru::new(config).await?;
-    let result = amaru.scan_file(&cnc_file).await?;
+    let result = amaru.scan_file_with_options(&cnc_file, true, false).await?;
 
     // Verificar detección de C&C
     let behaviors = result.behaviors.as_ref().expect("No se detectaron comportamientos");
@@ -523,25 +510,17 @@ async fn test_command_and_control() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 async fn test_pe_analysis_performance() -> Result<(), Box<dyn std::error::Error>> {
-    use criterion::{black_box, criterion_group, Criterion};
-    use std::time::Instant;
-
-    let analyzer = BehaviorAnalyzer::new()?;
-    let test_files = generate_test_files(100)?; // Generar 100 archivos PE de prueba
-    
+    let analyzer = BehaviorAnalyzer::new();
+    let files: Vec<_> = (0..100u8).map(|i| support::import_fixture(support::INJECTION, &[i])).collect();
     let start = Instant::now();
-    for file in test_files {
-        let hash = calculate_file_hash(&file)?;
-        analyzer.analyze_pe_optimized(&std::fs::read(&file)?, &hash)?;
+    for bytes in &files {
+        let result = analyzer.analyze_optimized(bytes, "")?;
+        assert!(result.iter().any(|b| matches!(b.behavior_type, MaliciousBehaviorType::ProcessInjection)));
     }
-    let duration = start.elapsed();
-
-    // Verificar rendimiento
-    assert!(duration.as_secs() < 10, "El análisis PE debe completarse en menos de 10 segundos");
-    
-    // Verificar hits de caché
-    let stats = analyzer.get_stats();
-    assert!(stats.cache_hits > 0, "El caché debe ser utilizado");
-
+    assert!(start.elapsed().as_secs() < 10);
+    let first = analyzer.analyze_optimized(&files[0], "")?;
+    assert_eq!(first, analyzer.analyze_optimized(&files[0], "")?);
+    let (hits, misses, _, _) = analyzer.get_stats();
+    assert_eq!((hits, misses), (2, 100));
     Ok(())
-} 
+}

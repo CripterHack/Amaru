@@ -1,54 +1,33 @@
-use std::path::{Path, PathBuf};
-use std::io::{self, Read, Write};
-use std::fs::File;
+use std::{io, path::Path, time::SystemTime};
 use thiserror::Error;
-use log::{error, info, warn, debug};
-use std::time::SystemTime;
-
-#[cfg(windows)]
-use winapi::um::wintrust::{WinVerifyTrust, WINTRUST_DATA, WINTRUST_FILE_INFO};
-#[cfg(windows)]
-use winapi::shared::winerror::TRUST_E_SUBJECT_NOT_TRUSTED;
-#[cfg(windows)]
-use winapi::um::softpub::WINTRUST_ACTION_GENERIC_VERIFY_V2;
-#[cfg(windows)]
-use winapi::um::wincrypt::CERT_CONTEXT;
-#[cfg(windows)]
-use winapi::shared::guiddef::GUID;
-#[cfg(windows)]
-use std::ptr;
-#[cfg(windows)]
-use std::ffi::OsStr;
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
 
 /// Errores relacionados con la firma digital
 #[derive(Error, Debug)]
 pub enum SignatureError {
     #[error("Error de E/S: {0}")]
     IoError(#[from] io::Error),
-    
+
     #[error("El archivo no está firmado digitalmente")]
     NotSigned,
-    
+
     #[error("La firma digital no es válida")]
     InvalidSignature,
-    
+
     #[error("La firma digital ha expirado")]
     ExpiredSignature,
-    
+
     #[error("El certificado no es de confianza")]
     UntrustedCertificate(String),
-    
+
     #[error("Error al verificar la firma: {0}")]
     VerificationFailed(String),
-    
+
     #[error("Error de sistema: {0}")]
     SystemError(String),
-    
+
     #[error("Esta función solo está disponible en Windows")]
     PlatformNotSupported,
-    
+
     #[error("Internal error: {0}")]
     InternalError(String),
 }
@@ -82,163 +61,42 @@ impl DigitalSignature {
     pub fn new() -> Self {
         DigitalSignature
     }
-    
-    /// Verifies if a file is digitally signed and the signature is valid
+
+    /// Checks the embedded Authenticode signature or the installed system catalog.
     pub fn verify_signature<P: AsRef<Path>>(&self, path: P) -> Result<bool, SignatureError> {
-        let path = path.as_ref();
-        let path_str = path.to_string_lossy().to_string();
-        
-        if !path.exists() {
-            return Err(SignatureError::IoError(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("File not found: {}", path_str)
-            )));
-        }
-
-        #[cfg(target_os = "windows")]
+        let file = std::fs::File::open(path.as_ref())?;
+        #[cfg(windows)]
         {
-            use std::ptr;
-            use std::ffi::OsString;
-            use std::os::windows::ffi::OsStrExt;
-            use std::ffi::OsStr;
-            use winapi::um::wintrust::{
-                WinVerifyTrust, WINTRUST_DATA, WINTRUST_FILE_INFO,
-                WTD_CHOICE_FILE, WTD_STATEACTION_VERIFY, WTD_STATEACTION_CLOSE,
-                WTD_REVOKE_NONE, WTD_UI_NONE,
-            };
-            use winapi::shared::winerror::TRUST_E_SUBJECT_NOT_TRUSTED;
-            use winapi::shared::guiddef::GUID;
-            use winapi::um::wincrypt::WINTRUST_ACTION_GENERIC_VERIFY_V2;
-
-            // Convert path to wide string
-            let path_wide: Vec<u16> = OsString::from(path)
-                .encode_wide()
-                .chain(Some(0))
-                .collect();
-
-            let mut file_info = WINTRUST_FILE_INFO {
-                cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
-                pcwszFilePath: path_wide.as_ptr(),
-                hFile: ptr::null_mut(),
-                pgKnownSubject: ptr::null_mut(),
-            };
-
-            let mut trust_data = WINTRUST_DATA {
-                cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
-                pPolicyCallbackData: ptr::null_mut(),
-                pSIPClientData: ptr::null_mut(),
-                dwUIChoice: WTD_UI_NONE,
-                fdwRevocationChecks: WTD_REVOKE_NONE,
-                dwUnionChoice: WTD_CHOICE_FILE,
-                union1: unsafe { std::mem::zeroed() },
-                dwStateAction: WTD_STATEACTION_VERIFY,
-                hWVTStateData: ptr::null_mut(),
-                pwszURLReference: ptr::null_mut(),
-                dwProvFlags: 0,
-                dwUIContext: 0,
-                pSignatureSettings: ptr::null_mut(),
-            };
-
-            unsafe {
-                // Set the file info in the union
-                *trust_data.union1.pFile_mut() = &mut file_info;
-
-                // Get GUID for action
-                let action_guid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-
-                // Verify trust
-                let status = WinVerifyTrust(
-                    0,
-                    &action_guid,
-                    &mut trust_data as *mut _ as *mut _,
-                );
-
-                // Reset state
-                trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
-                WinVerifyTrust(
-                    0,
-                    &action_guid,
-                    &mut trust_data as *mut _ as *mut _,
-                );
-
-                if status == 0 {
-                    debug!("Digital signature verification passed for: {}", path_str);
-                    Ok(true)
-                } else if status == TRUST_E_SUBJECT_NOT_TRUSTED as i32 {
-                    warn!("Digital signature not trusted for: {}", path_str);
-                    Err(SignatureError::UntrustedCertificate(path_str))
-                } else {
-                    warn!("Digital signature verification failed for: {} with status: {}", path_str, status);
-                    Err(SignatureError::VerificationFailed(format!(
-                        "Verification failed with status code: {}", status
-                    )))
-                }
-            }
+            native::with_verified_file(&file, path.as_ref(), |_| Ok(true))
         }
-
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(windows))]
         {
-            // For non-Windows platforms, we'd need to implement alternative verification methods
-            // For example, using OpenSSL or other platform-specific APIs
-            warn!("Digital signature verification not implemented for this platform");
+            drop(file);
             Err(SignatureError::PlatformNotSupported)
         }
     }
-    
-    /// Wrapper for verifying installer signatures
-    pub fn verify_installer_signature<P: AsRef<Path>>(&self, path: P) -> Result<bool, SignatureError> {
-        let path = path.as_ref();
-        let path_str = path.to_string_lossy().to_string();
-        
-        info!("Verifying digital signature of installer: {}", path_str);
-        match self.verify_signature(path) {
-            Ok(true) => {
-                info!("Installer signature verification passed: {}", path_str);
-                Ok(true)
-            },
-            Ok(false) => {
-                warn!("Installer signature verification failed: {}", path_str);
-                Ok(false)
-            },
-            Err(e) => {
-                error!("Error verifying installer signature: {}", e);
-                Err(e)
-            }
-        }
+
+    pub fn verify_installer_signature<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<bool, SignatureError> {
+        log::info!("Verifying installer signature: {}", path.as_ref().display());
+        self.verify_signature(path)
     }
-    
-    /// Gets information about the digital signature
-    pub fn get_signature_info<P: AsRef<Path>>(&self, path: P) -> Result<SignatureInfo, SignatureError> {
-        let path = path.as_ref();
-        let path_str = path.to_string_lossy().to_string();
-        
-        if !path.exists() {
-            return Err(SignatureError::IoError(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("File not found: {}", path_str)
-            )));
-        }
 
-        #[cfg(target_os = "windows")]
+    /// Returns the certificate of the signer accepted by the Windows trust provider.
+    pub fn get_signature_info<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<SignatureInfo, SignatureError> {
+        let file = std::fs::File::open(path.as_ref())?;
+        #[cfg(windows)]
         {
-            // On Windows, we would implement this using WinCrypt API or other Windows-specific APIs
-            // This is a placeholder and would need to be implemented with actual Windows API calls
-            warn!("Get signature info is not fully implemented yet");
-            Ok(SignatureInfo {
-                subject: "Unknown".to_string(),
-                issuer: "Unknown".to_string(),
-                valid_from: SystemTime::now(),
-                valid_until: SystemTime::now(),
-                thumbprint: "0000000000000000000000000000000000000000".to_string(),
-                is_timestamped: false,
-                timestamp: None,
-                algorithm: "SHA256".to_string(),
-            })
+            native::with_verified_file(&file, path.as_ref(), native::signer_info)
         }
-
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(windows))]
         {
-            warn!("Digital signature information retrieval not implemented for this platform");
+            drop(file);
             Err(SignatureError::PlatformNotSupported)
         }
     }
@@ -250,53 +108,364 @@ impl Default for DigitalSignature {
     }
 }
 
+#[cfg(windows)]
+mod native {
+    use super::*;
+    use std::{
+        ffi::CStr,
+        fs::File,
+        mem::{size_of, zeroed},
+        os::windows::{ffi::OsStrExt, io::AsRawHandle},
+        ptr,
+        time::{Duration, UNIX_EPOCH},
+    };
+    use windows_sys::Win32::{
+        Foundation::{
+            CERT_E_CHAINING, CERT_E_EXPIRED, CERT_E_REVOKED, CERT_E_UNTRUSTEDROOT,
+            CERT_E_WRONG_USAGE, CRYPT_E_NOT_FOUND, ERROR_NOT_FOUND, FILETIME, HANDLE,
+            TRUST_E_BAD_DIGEST, TRUST_E_EXPLICIT_DISTRUST, TRUST_E_NOSIGNATURE,
+            TRUST_E_PROVIDER_UNKNOWN, TRUST_E_SUBJECT_FORM_UNKNOWN, TRUST_E_SUBJECT_NOT_TRUSTED,
+        },
+        Security::{
+            Cryptography::{
+                Catalog::*, CertGetCertificateContextProperty, CertGetNameStringW, CERT_CONTEXT,
+                CERT_NAME_ISSUER_FLAG, CERT_NAME_RDN_TYPE, CERT_SHA1_HASH_PROP_ID,
+            },
+            WinTrust::*,
+        },
+    };
+
+    // WINTRUST_DATA, FILE_INFO and CATALOG_INFO have optional pointer fields whose ABI default is NULL.
+    // All pointers remain live for both the verification and the matching state close.
+    fn inspect<T>(
+        choice: u32,
+        subject: WINTRUST_DATA_0,
+        read: fn(HANDLE) -> Result<T, SignatureError>,
+    ) -> Result<T, SignatureError> {
+        unsafe {
+            let mut data = WINTRUST_DATA {
+                cbStruct: size_of::<WINTRUST_DATA>() as u32,
+                dwUIChoice: WTD_UI_NONE,
+                fdwRevocationChecks: WTD_REVOKE_WHOLECHAIN,
+                dwProvFlags: WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT | WTD_DISABLE_MD2_MD4,
+                dwUnionChoice: choice,
+                Anonymous: subject,
+                dwStateAction: WTD_STATEACTION_VERIFY,
+                ..zeroed()
+            };
+            let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+            let status = WinVerifyTrust(
+                ptr::null_mut(),
+                &mut action,
+                (&mut data as *mut WINTRUST_DATA).cast(),
+            );
+            let result = match status {
+                0 => read(data.hWVTStateData),
+                TRUST_E_NOSIGNATURE | TRUST_E_SUBJECT_FORM_UNKNOWN | TRUST_E_PROVIDER_UNKNOWN => {
+                    Err(SignatureError::NotSigned)
+                }
+                TRUST_E_BAD_DIGEST => Err(SignatureError::InvalidSignature),
+                CERT_E_EXPIRED => Err(SignatureError::ExpiredSignature),
+                TRUST_E_SUBJECT_NOT_TRUSTED
+                | TRUST_E_EXPLICIT_DISTRUST
+                | CERT_E_CHAINING
+                | CERT_E_UNTRUSTEDROOT
+                | CERT_E_WRONG_USAGE
+                | CERT_E_REVOKED => Err(SignatureError::UntrustedCertificate(format!(
+                    "HRESULT {status:#010x}"
+                ))),
+                _ => Err(SignatureError::VerificationFailed(format!(
+                    "WinVerifyTrust HRESULT {status:#010x}"
+                ))),
+            };
+            data.dwStateAction = WTD_STATEACTION_CLOSE;
+            WinVerifyTrust(
+                ptr::null_mut(),
+                &mut action,
+                (&mut data as *mut WINTRUST_DATA).cast(),
+            );
+            result
+        }
+    }
+
+    pub(super) fn with_verified_file<T>(
+        file: &File,
+        path: &Path,
+        read: fn(HANDLE) -> Result<T, SignatureError>,
+    ) -> Result<T, SignatureError> {
+        let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut info = WINTRUST_FILE_INFO {
+            cbStruct: size_of::<WINTRUST_FILE_INFO>() as u32,
+            pcwszFilePath: path.as_ptr(),
+            hFile: file.as_raw_handle(),
+            pgKnownSubject: ptr::null_mut(),
+        };
+        match inspect(WTD_CHOICE_FILE, WINTRUST_DATA_0 { pFile: &mut info }, read) {
+            Err(SignatureError::NotSigned) => {}
+            result => return result,
+        }
+        // Windows distributes many inbox executables as catalog-signed members.
+        for algorithm in ["SHA256", "SHA1"] {
+            match verify_catalog(file, &path, algorithm, read) {
+                Err(SignatureError::NotSigned) => {}
+                result => return result,
+            }
+        }
+        Err(SignatureError::NotSigned)
+    }
+
+    struct Catalog {
+        admin: isize,
+        catalog: isize,
+    }
+    impl Drop for Catalog {
+        fn drop(&mut self) {
+            unsafe {
+                if self.catalog != 0 {
+                    CryptCATAdminReleaseCatalogContext(self.admin, self.catalog, 0);
+                }
+                CryptCATAdminReleaseContext(self.admin, 0);
+            }
+        }
+    }
+
+    fn verify_catalog<T>(
+        file: &File,
+        path: &[u16],
+        algorithm: &str,
+        read: fn(HANDLE) -> Result<T, SignatureError>,
+    ) -> Result<T, SignatureError> {
+        let algorithm: Vec<_> = algorithm.encode_utf16().chain(Some(0)).collect();
+        let mut admin = 0;
+        // Each catalog lookup hashes the same open file handle passed to WinVerifyTrust.
+        unsafe {
+            if CryptCATAdminAcquireContext2(
+                &mut admin,
+                ptr::null(),
+                algorithm.as_ptr(),
+                ptr::null(),
+                0,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error().into());
+            }
+            let mut guard = Catalog { admin, catalog: 0 };
+            let mut size = 0;
+            if CryptCATAdminCalcHashFromFileHandle2(
+                admin,
+                file.as_raw_handle(),
+                &mut size,
+                ptr::null_mut(),
+                0,
+            ) == 0
+                || size == 0
+            {
+                return Err(io::Error::last_os_error().into());
+            }
+            let mut hash = vec![0; size as usize];
+            if CryptCATAdminCalcHashFromFileHandle2(
+                admin,
+                file.as_raw_handle(),
+                &mut size,
+                hash.as_mut_ptr(),
+                0,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error().into());
+            }
+            hash.truncate(size as usize);
+            guard.catalog =
+                CryptCATAdminEnumCatalogFromHash(admin, hash.as_ptr(), size, 0, ptr::null_mut());
+            if guard.catalog == 0 {
+                let err = io::Error::last_os_error();
+                return match err.raw_os_error() {
+                    Some(code) if code == ERROR_NOT_FOUND as i32 || code == CRYPT_E_NOT_FOUND => {
+                        Err(SignatureError::NotSigned)
+                    }
+                    _ => Err(err.into()),
+                };
+            }
+            let mut catalog = CATALOG_INFO {
+                cbStruct: size_of::<CATALOG_INFO>() as u32,
+                ..zeroed()
+            };
+            if CryptCATCatalogInfoFromContext(guard.catalog, &mut catalog, 0) == 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            let tag: Vec<_> = hex(&hash).encode_utf16().chain(Some(0)).collect();
+            let mut info = WINTRUST_CATALOG_INFO {
+                cbStruct: size_of::<WINTRUST_CATALOG_INFO>() as u32,
+                pcwszCatalogFilePath: catalog.wszCatalogFile.as_ptr(),
+                pcwszMemberTag: tag.as_ptr(),
+                pcwszMemberFilePath: path.as_ptr(),
+                hMemberFile: file.as_raw_handle(),
+                pbCalculatedFileHash: hash.as_mut_ptr(),
+                cbCalculatedFileHash: size,
+                hCatAdmin: admin,
+                ..zeroed()
+            };
+            inspect(
+                WTD_CHOICE_CATALOG,
+                WINTRUST_DATA_0 {
+                    pCatalog: &mut info,
+                },
+                read,
+            )
+        }
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02X}")).collect()
+    }
+
+    fn cert_name(cert: &CERT_CONTEXT, flags: u32) -> Result<String, SignatureError> {
+        unsafe {
+            let count = CertGetNameStringW(
+                cert,
+                CERT_NAME_RDN_TYPE,
+                flags,
+                ptr::null(),
+                ptr::null_mut(),
+                0,
+            );
+            if count <= 1 {
+                return Err(SignatureError::VerificationFailed(
+                    "Empty certificate name".into(),
+                ));
+            }
+            let mut text = vec![0u16; count as usize];
+            if CertGetNameStringW(
+                cert,
+                CERT_NAME_RDN_TYPE,
+                flags,
+                ptr::null(),
+                text.as_mut_ptr(),
+                count,
+            ) != count
+            {
+                return Err(io::Error::last_os_error().into());
+            }
+            String::from_utf16(&text[..count as usize - 1])
+                .map_err(|err| SignatureError::VerificationFailed(err.to_string()))
+        }
+    }
+
+    fn system_time(t: FILETIME) -> Result<SystemTime, SignatureError> {
+        // FILETIME counts 100 ns intervals since 1601-01-01.
+        const EPOCH: u64 = 116_444_736_000_000_000;
+        let value = (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+        let ticks = value.abs_diff(EPOCH);
+        let delta = Duration::new(ticks / 10_000_000, ((ticks % 10_000_000) * 100) as u32);
+        (if value >= EPOCH {
+            UNIX_EPOCH.checked_add(delta)
+        } else {
+            UNIX_EPOCH.checked_sub(delta)
+        })
+        .ok_or_else(|| SignatureError::VerificationFailed("Invalid certificate time".into()))
+    }
+
+    pub(super) fn signer_info(state: HANDLE) -> Result<SignatureInfo, SignatureError> {
+        let missing = || {
+            SignatureError::VerificationFailed(
+                "Windows trust provider returned incomplete signer information".into(),
+            )
+        };
+        // Provider-owned pointers are valid until WTD_STATEACTION_CLOSE in inspect.
+        unsafe {
+            let provider = WTHelperProvDataFromStateData(state);
+            if provider.is_null() {
+                return Err(missing());
+            }
+            let signer = WTHelperGetProvSignerFromChain(provider, 0, 0, 0);
+            let signer_ref = signer.as_ref().ok_or_else(missing)?;
+            let leaf = WTHelperGetProvCertFromChain(signer, 0)
+                .as_ref()
+                .ok_or_else(missing)?;
+            let cert = leaf.pCert.as_ref().ok_or_else(missing)?;
+            let info = cert.pCertInfo.as_ref().ok_or_else(missing)?;
+            let signer_info = signer_ref.psSigner.as_ref().ok_or_else(missing)?;
+            let oid = signer_info.HashAlgorithm.pszObjId;
+            if oid.is_null() {
+                return Err(missing());
+            }
+            let algorithm = CStr::from_ptr(oid.cast())
+                .to_str()
+                .map_err(|_| missing())?
+                .to_owned();
+            let mut digest = [0u8; 20];
+            let mut len = digest.len() as u32;
+            if CertGetCertificateContextProperty(
+                cert,
+                CERT_SHA1_HASH_PROP_ID,
+                digest.as_mut_ptr().cast(),
+                &mut len,
+            ) == 0
+                || len != digest.len() as u32
+            {
+                return Err(io::Error::last_os_error().into());
+            }
+            let timestamp = if signer_ref.csCounterSigners > 0 {
+                let counter = WTHelperGetProvSignerFromChain(provider, 0, 1, 0)
+                    .as_ref()
+                    .ok_or_else(missing)?;
+                if counter.dwError == 0 {
+                    Some(system_time(signer_ref.sftVerifyAsOf)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            Ok(SignatureInfo {
+                subject: cert_name(cert, 0)?,
+                issuer: cert_name(cert, CERT_NAME_ISSUER_FLAG)?,
+                valid_from: system_time(info.NotBefore)?,
+                valid_until: system_time(info.NotAfter)?,
+                thumbprint: hex(&digest),
+                is_timestamped: timestamp.is_some(),
+                timestamp,
+                algorithm,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
-    fn test_verify_unsigned_file() {
-        // This test will create a temporary file that is obviously not signed
-        // and checks that the verification correctly identifies it as unsigned
-        let temp_file = tempfile::NamedTempFile::new().unwrap();
-        let path = temp_file.path();
-        
-        let signature = DigitalSignature::new();
-        
-        // Depending on platform, this test might behave differently
-        if cfg!(target_os = "windows") {
-            // On Windows it should return an error indicating untrusted certificate
-            // or verification failed, since the file is not signed
-            match signature.verify_signature(path) {
-                Err(SignatureError::UntrustedCertificate(_)) => {},
-                Err(SignatureError::VerificationFailed(_)) => {},
-                other => panic!("Expected UntrustedCertificate or VerificationFailed error, got: {:?}", other),
-            }
-        } else {
-            // On other platforms it should return UnsupportedPlatform error
-            match signature.verify_signature(path) {
-                Err(SignatureError::PlatformNotSupported) => {},
-                other => panic!("Expected PlatformNotSupported error, got: {:?}", other),
-            }
-        }
+    fn verification_and_metadata_reject_unsigned_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unsigned.txt");
+        std::fs::write(&path, b"Amaru unsigned signature control").unwrap();
+        let verifier = DigitalSignature::new();
+        assert!(verifier.verify_signature(&path).is_err());
+        assert!(verifier.get_signature_info(&path).is_err());
     }
-    
+
+    #[cfg(windows)]
     #[test]
-    #[cfg(target_os = "windows")]
-    fn test_verify_system_file() {
-        // This test tries to verify a known signed Windows system file
-        // This should only run on Windows
-        let system32_path = PathBuf::from(r"C:\Windows\System32\ntdll.dll");
-        
-        if system32_path.exists() {
-            let signature = DigitalSignature::new();
-            let result = signature.verify_signature(&system32_path);
-            
-            // The file should be properly signed
-            assert!(result.is_ok() && result.unwrap());
-        } else {
-            // If we can't find the file, we'll skip the test
-            println!("Skipping test_verify_system_file as system file not found");
-        }
+    fn reads_the_verified_certificate_of_a_windows_system_file() {
+        let windows = std::env::var_os("SystemRoot").unwrap();
+        let path = Path::new(&windows).join("System32").join("ntdll.dll");
+        let verifier = DigitalSignature::new();
+        assert!(verifier.verify_installer_signature(&path).unwrap());
+        let info = verifier.get_signature_info(path).unwrap();
+        assert!(!info.subject.is_empty() && !info.issuer.is_empty());
+        assert!(info.valid_from < info.valid_until);
+        assert_eq!(info.thumbprint.len(), 40);
+        assert!(info.thumbprint.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(info.thumbprint.chars().any(|c| c != '0'));
+        assert_eq!(info.is_timestamped, info.timestamp.is_some());
+        assert!(!info.algorithm.is_empty());
     }
-} 
+
+    #[test]
+    fn missing_files_return_an_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            matches!(DigitalSignature::new().verify_signature(dir.path().join("missing")),Err(SignatureError::IoError(e)) if e.kind()==io::ErrorKind::NotFound)
+        );
+    }
+}

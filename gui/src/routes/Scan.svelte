@@ -4,71 +4,74 @@
   import { notify } from '../lib/components/Notifications.svelte';
   
   // Scan states
-  let scanning = false;
-  let scanProgress = 0;
-  let scanResults = {
-    scanned: 0,
-    threats: 0,
-    elapsed: 0,
-    speed: 0
-  };
-  
-  // Scan types
+  import { listen } from '@tauri-apps/api/event';
+  import { open } from '@tauri-apps/api/dialog';
+  import { manageListeners } from '../lib/tauriEvents';
+  import type { ScanProgress, ScanRecord } from '../lib/stores/statusStore';
+
+  let progress: ScanProgress | null = null;
+  let starting = false;
+  let cancelling = false;
+  let history: ScanRecord[] = [];
+  let loadError = '';
   const scanTypes = [
-    { id: 'quick', label: 'Quick Scan', description: 'Checks the most vulnerable areas of your system', time: '2-5 minutes', icon: 'bolt' },
-    { id: 'full', label: 'Full Scan', description: 'Thoroughly checks your entire system', time: '30-60 minutes', icon: 'shield' },
-    { id: 'custom', label: 'Custom Scan', description: 'Scan specific locations of your choice', time: 'Varies', icon: 'tune' },
-    { id: 'scheduled', label: 'Scheduled Scan', description: 'Manage your scheduled scans', time: 'Configured', icon: 'schedule' }
+    { id: 'quick', label: 'Quick scan', description: 'Scan your Downloads, Desktop and Documents folders.', icon: 'bolt' },
+    { id: 'full', label: 'Full scan', description: 'Scan regular files on the Windows system drive.', icon: 'shield' },
+    { id: 'custom', label: 'Custom scan', description: 'Choose a folder to scan.', icon: 'tune' },
+    { id: 'scheduled', label: 'Scheduled scan', description: 'View scheduled scan configuration.', icon: 'schedule' }
   ];
-  
-  // Start scan
-  async function startScan(type: string) {
-    if (scanning) return;
-    
-    scanning = true;
-    scanProgress = 0;
-    scanResults = { scanned: 0, threats: 0, elapsed: 0, speed: 0 };
-    
+
+  async function refreshHistory() {
     try {
-      notify('Scan Started', `${type.charAt(0).toUpperCase() + type.slice(1)} scan has been initiated`, 'info');
-      
-      // In a real app, we would invoke the Tauri backend
-      // await invoke('start_scan', { type });
-      
-      // For demo, we'll simulate a scan
-      const interval = setInterval(() => {
-        scanProgress += 1;
-        scanResults.scanned += Math.floor(Math.random() * 50) + 10;
-        scanResults.speed = Math.floor(Math.random() * 100) + 50;
-        scanResults.elapsed += 1;
-        
-        if (Math.random() > 0.95) {
-          scanResults.threats += 1;
-          notify('Threat Found', 'A potential threat was detected', 'warning');
-        }
-        
-        if (scanProgress >= 100) {
-          clearInterval(interval);
-          scanning = false;
-          notify('Scan Completed', `Scan complete: ${scanResults.threats} threats found`, 
-            scanResults.threats > 0 ? 'warning' : 'success');
-        }
-      }, type === 'quick' ? 100 : type === 'full' ? 200 : 150);
+      history = await invoke<ScanRecord[]>('get_scan_history');
+      loadError = '';
+    } catch (error) { loadError = String(error); }
+  }
+
+  onMount(() => {
+    let revision = 0;
+    let active = true;
+    const registrations = [
+      listen<ScanProgress>('scan-progress', ({ payload }) => { revision++; progress = payload; }),
+      listen<ScanRecord>('scan-completed', () => {
+        revision++; progress = null; starting = false; cancelling = false;
+        void refreshHistory();
+      })
+    ];
+    const stop = manageListeners(registrations);
+    void Promise.all(registrations).then(async () => {
+      const before = revision;
+      const current = await invoke<ScanProgress | null>('get_scan_progress');
+      if (active && revision === before) progress = current;
+    }).catch(error => loadError = String(error));
+    void refreshHistory();
+    return () => { active = false; stop(); };
+  });
+
+  async function startScan(type: string) {
+    if (progress || starting) return;
+    if (type === 'scheduled') { window.location.hash = '#/scan-config'; return; }
+    starting = true;
+    try {
+      if (type === 'custom') {
+        const path = await open({ directory: true, multiple: false });
+        if (typeof path !== 'string') return;
+        await invoke('start_custom_scan', { path });
+      } else {
+        await invoke(type === 'quick' ? 'start_quick_scan' : 'start_full_scan');
+      }
+      progress = await invoke<ScanProgress | null>('get_scan_progress');
     } catch (error) {
-      console.error('Failed to start scan:', error);
-      scanning = false;
-      notify('Scan Error', `Failed to start scan: ${error}`, 'error');
-    }
+      notify('Scan error', String(error), 'error');
+    } finally { starting = false; }
   }
-  
-  // Cancel scan
-  function cancelScan() {
-    // In a real app, we would invoke the Tauri backend
-    // await invoke('cancel_scan');
-    scanning = false;
-    notify('Scan Cancelled', 'The current scan has been cancelled', 'info');
+
+  async function cancelScan() {
+    cancelling = true;
+    try { await invoke('cancel_scan'); }
+    catch (error) { cancelling = false; notify('Cancellation failed', String(error), 'error'); }
   }
-  
+
   // Format time
   function formatTime(seconds: number) {
     const mins = Math.floor(seconds / 60);
@@ -80,42 +83,42 @@
 <div class="container mx-auto px-4 py-8">
   <h1 class="text-3xl font-bold mb-8">Scan</h1>
   
-  {#if scanning}
+  {#if progress}
     <!-- Scan Progress -->
     <div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
       <div class="flex justify-between items-center mb-4">
         <h2 class="text-xl font-semibold">Scan in Progress</h2>
         <button 
-          on:click={cancelScan} 
+          on:click={cancelScan} disabled={cancelling} 
           class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-md"
         >
-          Cancel
+          {cancelling ? 'Cancelling…' : 'Cancel scan'}
         </button>
       </div>
       
-      <div class="w-full bg-gray-200 rounded-full h-2.5 mb-6 dark:bg-gray-700">
-        <div class="bg-blue-600 h-2.5 rounded-full" style="width: {scanProgress}%"></div>
+      <div class="w-full mb-6">
+        <p class="truncate text-sm">{progress.currentFile}</p>
       </div>
       
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
         <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
           <p class="text-sm text-gray-500 dark:text-gray-400">Scanned</p>
-          <p class="text-2xl font-bold">{scanResults.scanned}</p>
+          <p class="text-2xl font-bold">{progress.filesScanned}</p>
         </div>
         
         <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
           <p class="text-sm text-gray-500 dark:text-gray-400">Threats</p>
-          <p class="text-2xl font-bold">{scanResults.threats}</p>
+          <p class="text-2xl font-bold">{progress.threatsFound}</p>
         </div>
         
         <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
           <p class="text-sm text-gray-500 dark:text-gray-400">Elapsed</p>
-          <p class="text-2xl font-bold">{formatTime(scanResults.elapsed)}</p>
+          <p class="text-2xl font-bold">{formatTime(Math.floor(progress.elapsedMs / 1000))}</p>
         </div>
         
         <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
           <p class="text-sm text-gray-500 dark:text-gray-400">Speed</p>
-          <p class="text-2xl font-bold">{scanResults.speed}/s</p>
+          <p class="text-2xl font-bold">{Math.round(progress.filesScanned * 1000 / Math.max(1, progress.elapsedMs))}/s</p>
         </div>
       </div>
     </div>
@@ -128,7 +131,6 @@
             <div>
               <h2 class="text-xl font-semibold">{scan.label}</h2>
               <p class="text-gray-600 dark:text-gray-400 text-sm mt-1">{scan.description}</p>
-              <p class="text-gray-500 dark:text-gray-500 text-xs mt-2">Estimated time: {scan.time}</p>
             </div>
             <div class="p-3 bg-blue-100 dark:bg-blue-900/30 rounded-full text-blue-600 dark:text-blue-300">
               <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -146,7 +148,7 @@
           </div>
           
           <button 
-            on:click={() => startScan(scan.id)}
+            disabled={starting} on:click={() => startScan(scan.id)}
             class="w-full mt-4 bg-blue-500 hover:bg-blue-600 text-white py-2 rounded-md transition-colors"
           >
             Start {scan.label}
@@ -160,7 +162,21 @@
   <div class="mt-8">
     <h2 class="text-xl font-semibold mb-4">Last Scan Results</h2>
     <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
-      <p class="text-gray-500 dark:text-gray-400">No recent scan results available</p>
+       {#if loadError}
+        <p role="alert">{loadError}</p>
+      {:else if history.length === 0}
+        <p>No recent scan results available</p>
+      {:else}
+        <ul>
+          {#each history as record (record.id)}
+            <li class="py-2">{record.scan_type} · {record.status} · {new Date(record.completed_at).toLocaleString()} ·
+              {record.files_scanned} scanned · {record.threats_found} findings ·
+              {record.files_failed ?? 0} failed · {record.files_skipped ?? 0} skipped
+              {#if record.last_error}<p class="text-sm">{record.last_error}</p>{/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </div>
   </div>
 </div> 

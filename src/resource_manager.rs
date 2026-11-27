@@ -1,18 +1,20 @@
+use dashmap::DashMap;
+use log::{debug, info, warn};
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
-    sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}},
-    collections::HashMap,
-    time::{Duration, Instant},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex,
+    },
     thread::available_parallelism,
+    time::{Duration, Instant},
 };
+use sysinfo::{CpuExt, PidExt, ProcessExt, System, SystemExt};
+use tokio::sync::oneshot;
 use tokio::{
     sync::{RwLock, Semaphore},
     time,
 };
-use dashmap::DashMap;
-use crossbeam_channel::{bounded, Sender, Receiver};
-use rayon::{ThreadPool, ThreadPoolBuilder};
-use log::{info, warn, debug, error};
-use sysinfo::{System, SystemExt, ProcessExt, CpuExt};
 
 use crate::config::{PerformanceConfig, ProcessPriority};
 
@@ -74,12 +76,10 @@ pub struct ResourceLimits {
 
 /// Gestor de recursos del sistema
 pub struct ResourceManager {
-    /// Pool de hilos para tareas CPU-intensivas
-    thread_pool: Arc<ThreadPool>,
-    /// Semáforo para limitar tareas concurrentes
-    task_limiter: Arc<Semaphore>,
+    workers: parking_lot::RwLock<Arc<Workers>>,
+    monitoring: AtomicBool,
     /// Configuración de rendimiento
-    performance_config: Arc<RwLock<PerformanceConfig>>,
+    performance_config: Arc<parking_lot::RwLock<PerformanceConfig>>,
     /// Estado activo
     active: Arc<AtomicBool>,
     /// Prioridad actual del sistema
@@ -91,47 +91,60 @@ pub struct ResourceManager {
     /// Siguiente ID de tarea
     next_task_id: Arc<AtomicU32>,
     /// Métricas recopiladas
-    metrics: Arc<RwLock<ResourceMetrics>>,
+    metrics: Arc<Mutex<ResourceMetrics>>,
     /// Cache optimizada
     task_cache: Arc<DashMap<String, (Vec<u8>, Instant)>>,
     /// Límites de recursos
     limits: Arc<RwLock<ResourceLimits>>,
 }
 
+struct Workers {
+    thread_pool: ThreadPool,
+    task_limiter: Arc<Semaphore>,
+}
+
+impl Workers {
+    fn thread_count(config: &PerformanceConfig) -> usize {
+        let cpus = available_parallelism().map(|p| p.get()).unwrap_or(1);
+        if config.low_resource_mode {
+            return (cpus / 2).max(1);
+        }
+        match config.process_priority {
+            ProcessPriority::Low => (cpus / 3).max(1),
+            ProcessPriority::BelowNormal => (cpus / 2).max(1),
+            ProcessPriority::Normal => cpus,
+            ProcessPriority::AboveNormal => cpus.saturating_add(1),
+            ProcessPriority::High => cpus.saturating_add(2),
+        }
+    }
+
+    fn build(config: &PerformanceConfig) -> Result<Self, rayon::ThreadPoolBuildError> {
+        let threads = Self::thread_count(config);
+        let thread_pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|i| format!("amaru-worker-{i}"))
+            .stack_size(3 * 1024 * 1024)
+            .build()?;
+        let concurrent = if config.low_resource_mode {
+            (threads / 2).max(1)
+        } else {
+            threads
+        };
+        Ok(Self {
+            thread_pool,
+            task_limiter: Arc::new(Semaphore::new(concurrent)),
+        })
+    }
+}
+
 impl ResourceManager {
     /// Crea una nueva instancia del gestor de recursos
     pub fn new(config: PerformanceConfig) -> Self {
-        // Determinar número óptimo de hilos basado en configuración
-        let num_cpus = available_parallelism().map(|p| p.get()).unwrap_or(4);
-        let thread_count = if config.low_resource_mode {
-            num_cpus.saturating_div(2).max(1)
-        } else {
-            match config.process_priority {
-                ProcessPriority::Low => num_cpus.saturating_div(3).max(1),
-                ProcessPriority::BelowNormal => num_cpus.saturating_div(2).max(1),
-                ProcessPriority::Normal => num_cpus,
-                ProcessPriority::AboveNormal => num_cpus.saturating_add(1),
-                ProcessPriority::High => num_cpus.saturating_add(2),
-            }
-        };
-        
+        let workers =
+            Workers::build(&config).expect("Unable to initialize the resource thread pool");
+        let thread_count = workers.thread_pool.current_num_threads();
         debug!("Inicializando ResourceManager con {} hilos", thread_count);
-        
-        // Crear thread pool con configuración optimizada
-        let thread_pool = ThreadPoolBuilder::new()
-            .num_threads(thread_count)
-            .thread_name(|i| format!("amaru-worker-{}", i))
-            .stack_size(3 * 1024 * 1024) // 3MB stack
-            .build()
-            .unwrap();
-            
-        // Inicializar semáforo para limitar concurrencia
-        let max_concurrent = if config.low_resource_mode {
-            thread_count.saturating_div(2).max(1)
-        } else {
-            thread_count
-        };
-        
+
         // Configurar límites de recursos según configuración
         let limits = ResourceLimits {
             max_cpu_usage: config.cpu_usage_limit.unwrap_or(90),
@@ -140,7 +153,7 @@ impl ResourceManager {
             background_task_interval_ms: if config.low_resource_mode { 5000 } else { 1000 },
             task_timeout_ms: 30000, // 30 segundos
         };
-        
+
         // Crear métricas iniciales
         let metrics = ResourceMetrics {
             cpu_usage: 0.0,
@@ -149,194 +162,154 @@ impl ResourceManager {
             pending_tasks: 0,
             timestamp: Instant::now(),
         };
-        
+
         ResourceManager {
-            thread_pool: Arc::new(thread_pool),
-            task_limiter: Arc::new(Semaphore::new(max_concurrent)),
-            performance_config: Arc::new(RwLock::new(config)),
+            workers: parking_lot::RwLock::new(Arc::new(workers)),
+            monitoring: AtomicBool::new(false),
+            performance_config: Arc::new(parking_lot::RwLock::new(config)),
             active: Arc::new(AtomicBool::new(true)),
             current_priority: Arc::new(Mutex::new(SystemPriority::Normal)),
             system: Arc::new(Mutex::new(System::new_all())),
             scheduled_tasks: Arc::new(DashMap::new()),
             next_task_id: Arc::new(AtomicU32::new(1)),
-            metrics: Arc::new(RwLock::new(metrics)),
+            metrics: Arc::new(Mutex::new(metrics)),
             task_cache: Arc::new(DashMap::with_capacity(1000)),
             limits: Arc::new(RwLock::new(limits)),
         }
     }
-    
+
     /// Inicia el monitoreo de recursos
     pub async fn start_monitoring(&self) {
+        if self.monitoring.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let active = self.active.clone();
         let system = self.system.clone();
         let performance_config = self.performance_config.clone();
         let metrics = self.metrics.clone();
         let current_priority = self.current_priority.clone();
-        
+
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(1));
-            
+
             while active.load(Ordering::Relaxed) {
                 interval.tick().await;
-                
+
                 // Refrescar información del sistema
-                let mut sys = system.lock().unwrap();
-                sys.refresh_all();
-                
-                // Obtener uso de CPU y memoria del proceso actual
-                let process_cpu = sys.processes()
-                    .values()
-                    .find(|p| p.pid().as_u32() == std::process::id())
-                    .map(|p| p.cpu_usage())
-                    .unwrap_or(0.0);
-                    
-                let process_memory = sys.processes()
-                    .values()
-                    .find(|p| p.pid().as_u32() == std::process::id())
-                    .map(|p| p.memory())
-                    .unwrap_or(0);
-                
-                // Obtener CPU global del sistema
-                let global_cpu = sys.global_cpu_info().cpu_usage();
-                
-                // Actualizar métricas
-                let mut metrics_guard = metrics.write().await;
-                metrics_guard.cpu_usage = process_cpu;
-                metrics_guard.memory_usage = process_memory;
-                metrics_guard.timestamp = Instant::now();
-                drop(metrics_guard);
-                
+                let (process_cpu, process_memory, global_cpu) = {
+                    let mut sys = system.lock().unwrap();
+                    let pid = sysinfo::Pid::from_u32(std::process::id());
+                    sys.refresh_cpu();
+                    sys.refresh_process(pid);
+                    let process = sys.process(pid);
+                    (
+                        process.map_or(0.0, ProcessExt::cpu_usage),
+                        process.map_or(0, ProcessExt::memory),
+                        sys.global_cpu_info().cpu_usage(),
+                    )
+                };
+                {
+                    let mut metrics = metrics.lock().unwrap();
+                    metrics.cpu_usage = process_cpu;
+                    metrics.memory_usage = process_memory;
+                    metrics.timestamp = Instant::now();
+                }
                 // Ajustar prioridad según uso del sistema
-                let config = performance_config.read().await;
+                let config = performance_config.read();
                 if config.pause_on_high_usage && global_cpu > config.high_usage_threshold as f32 {
                     let mut priority = current_priority.lock().unwrap();
                     if *priority != SystemPriority::Low {
                         *priority = SystemPriority::Low;
-                        info!("Sistema bajo carga alta ({}%), ajustando a prioridad baja", global_cpu);
+                        info!(
+                            "Sistema bajo carga alta ({}%), ajustando a prioridad baja",
+                            global_cpu
+                        );
                     }
                 } else if global_cpu < (config.high_usage_threshold as f32 * 0.8) {
                     let mut priority = current_priority.lock().unwrap();
                     if *priority == SystemPriority::Low {
                         *priority = SystemPriority::Normal;
-                        info!("Sistema con carga normal ({}%), restaurando prioridad", global_cpu);
+                        info!(
+                            "Sistema con carga normal ({}%), restaurando prioridad",
+                            global_cpu
+                        );
                     }
                 }
             }
         });
     }
-    
+
     /// Ejecuta una tarea en el pool de hilos con control de recursos
     pub async fn execute<F, T>(&self, task_type: TaskType, workload: F) -> Result<T, String>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        // Verificar la prioridad actual del sistema
-        let current_priority = {
-            let guard = self.current_priority.lock().unwrap();
-            *guard
-        };
-        
-        // Si estamos en prioridad baja, limitamos más agresivamente las tareas
-        let (tx, rx) = bounded(1);
-        
-        // Obtener un permiso del semáforo para limitar concurrencia
-        let permit = match current_priority {
-            SystemPriority::Low => {
-                // Mayor tiempo de espera en modo de baja prioridad
-                tokio::time::timeout(
-                    Duration::from_millis(500),
-                    self.task_limiter.acquire()
-                ).await.map_err(|_| "Timeout esperando permiso del semáforo".to_string())?
-            },
-            _ => self.task_limiter.acquire().await,
-        };
-        
-        // Registrar la tarea
-        let task_id = self.next_task_id.fetch_add(1, Ordering::SeqCst);
-        self.scheduled_tasks.insert(task_id, Instant::now());
-        
-        // Actualizar contador de tareas pendientes
-        {
-            let mut metrics = self.metrics.write().await;
-            metrics.pending_tasks += 1;
+        if !self.active.load(Ordering::Acquire) {
+            return Err("Resource manager stopped".into());
         }
-        
-        // Clonar lo necesario para mover al thread pool
-        let scheduled_tasks = self.scheduled_tasks.clone();
-        let metrics = self.metrics.clone();
-        
-        // Lanzar tarea con timeout según la prioridad
-        let timeout_ms = {
-            let limits = self.limits.read().await;
-            match current_priority {
-                SystemPriority::Low => limits.task_timeout_ms * 2,
-                SystemPriority::Normal => limits.task_timeout_ms,
-                SystemPriority::High => limits.task_timeout_ms / 2,
-            }
-        };
-        
-        self.thread_pool.spawn(move || {
-            let start = Instant::now();
-            
-            // Incrementar contador de hilos activos
-            tokio::runtime::Handle::current().block_on(async {
-                let mut m = metrics.write().await;
-                m.active_threads += 1;
-            });
-            
-            // Ejecutar la tarea
-            let result = workload();
-            
-            // Registrar métricas
-            let elapsed = start.elapsed();
-            debug!(
-                "Tarea {} completada en {:.2} ms", 
-                task_id, 
-                elapsed.as_millis()
-            );
-            
-            // Actualizar métricas y eliminar tarea completada
-            tokio::runtime::Handle::current().block_on(async {
-                let mut m = metrics.write().await;
-                m.active_threads -= 1;
-                m.pending_tasks -= 1;
-            });
-            
-            scheduled_tasks.remove(&task_id);
-            tx.send(result).ok();
-            drop(permit);
+        let priority = *self.current_priority.lock().unwrap();
+        let workers = self.workers.read().clone();
+        let acquire = workers.task_limiter.clone().acquire_owned();
+        let permit = if priority == SystemPriority::Low {
+            time::timeout(Duration::from_millis(500), acquire)
+                .await
+                .map_err(|_| "Task queue timeout")?
+        } else {
+            acquire.await
+        }
+        .map_err(|_| "Resource manager stopped")?;
+        if !self.active.load(Ordering::Acquire) {
+            return Err("Resource manager stopped".into());
+        }
+        let normal_timeout = self.limits.read().await.task_timeout_ms;
+        let timeout = Duration::from_millis(match priority {
+            SystemPriority::Low => normal_timeout.saturating_mul(2),
+            SystemPriority::Normal => normal_timeout,
+            SystemPriority::High => normal_timeout / 2,
         });
-        
-        // Esperar el resultado con timeout
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-            rx.recv().map_err(|e| format!("Error al recibir resultado: {}", e))
-        }).await {
-            Ok(result) => result,
-            Err(_) => {
-                warn!("Timeout ejecutando tarea {}", task_id);
-                self.scheduled_tasks.remove(&task_id);
-                Err("Timeout ejecutando tarea".to_string())
+        let task_id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
+        self.scheduled_tasks.insert(task_id, Instant::now());
+        self.metrics.lock().unwrap().pending_tasks += 1;
+        let metrics = self.metrics.clone();
+        let tasks = self.scheduled_tasks.clone();
+        let (tx, rx) = oneshot::channel();
+        workers.thread_pool.spawn(move || {
+            {
+                let mut state = metrics.lock().unwrap();
+                state.active_threads += 1;
+                state.pending_tasks = state.pending_tasks.saturating_sub(1);
             }
-        }
+            // The task keeps its permit until completion even if its caller times out.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(workload))
+                .map_err(|_| format!("{task_type:?} task panicked"));
+            tasks.remove(&task_id);
+            metrics.lock().unwrap().active_threads -= 1;
+            drop(permit);
+            let _ = tx.send(result);
+        });
+        time::timeout(timeout, rx)
+            .await
+            .map_err(|_| "Task execution timed out")?
+            .map_err(|_| "Task worker stopped")?
     }
-    
+
     /// Obtiene las métricas actuales del sistema
     pub async fn get_metrics(&self) -> ResourceMetrics {
-        self.metrics.read().await.clone()
+        self.metrics.lock().unwrap().clone()
     }
-    
+
     /// Limpia tareas antiguas o pendientes que han excedido el timeout
     pub async fn cleanup_stale_tasks(&self) {
         let now = Instant::now();
         let mut cleaned = 0;
-        
+
         // Obtener timeout máximo
         let timeout_ms = {
             let limits = self.limits.read().await;
             limits.task_timeout_ms * 3 // Triple del timeout normal
         };
-        
+
         self.scheduled_tasks.retain(|&_id, &mut timestamp| {
             let keep = now.saturating_duration_since(timestamp).as_millis() < timeout_ms as u128;
             if !keep {
@@ -344,57 +317,54 @@ impl ResourceManager {
             }
             keep
         });
-        
+
         if cleaned > 0 {
             warn!("Limpiadas {} tareas bloqueadas o antiguas", cleaned);
-            
-            // Actualizar métricas
-            let mut metrics = self.metrics.write().await;
-            metrics.pending_tasks = self.scheduled_tasks.len();
         }
     }
-    
+
     /// Almacena en caché el resultado de una tarea
     pub fn cache_result(&self, key: String, value: Vec<u8>, ttl_secs: u64) {
         // Limpiar caché si alcanza un tamaño considerable
         if self.task_cache.len() > 10000 {
             self.cleanup_cache(5000);
         }
-        
-        self.task_cache.insert(key, (value, Instant::now() + Duration::from_secs(ttl_secs)));
+
+        self.task_cache
+            .insert(key, (value, Instant::now() + Duration::from_secs(ttl_secs)));
     }
-    
+
     /// Recupera un resultado cacheado si está disponible y válido
     pub fn get_cached_result(&self, key: &str) -> Option<Vec<u8>> {
-        self.task_cache.get(key).and_then(|entry| {
-            let (value, expiry) = entry.value();
-            if Instant::now() < *expiry {
-                Some(value.clone())
-            } else {
-                self.task_cache.remove(key);
-                None
-            }
-        })
+        let entry = self.task_cache.get(key)?;
+        if entry.value().1 > Instant::now() {
+            return Some(entry.value().0.clone());
+        }
+        drop(entry);
+        self.task_cache
+            .remove_if(key, |_, (_, expiry)| *expiry <= Instant::now());
+        None
     }
-    
+
     /// Limpia entradas antiguas de la caché
     fn cleanup_cache(&self, retain: usize) {
         let now = Instant::now();
-        
+
         // Primero eliminar entradas expiradas
         self.task_cache.retain(|_, (_, expiry)| *expiry > now);
-        
+
         // Si aún hay demasiadas entradas, eliminar las más antiguas
         if self.task_cache.len() > retain {
             // Convertir a vector para ordenar
-            let mut entries: Vec<_> = self.task_cache
+            let mut entries: Vec<_> = self
+                .task_cache
                 .iter()
-                .map(|r| (r.key().clone(), *r.value().1))
+                .map(|r| (r.key().clone(), r.value().1))
                 .collect();
-            
+
             // Ordenar por tiempo de expiración ascendente
             entries.sort_by(|a, b| a.1.cmp(&b.1));
-            
+
             // Eliminar las entradas más antiguas
             let to_remove = entries.len() - retain;
             for (key, _) in entries.into_iter().take(to_remove) {
@@ -402,86 +372,64 @@ impl ResourceManager {
             }
         }
     }
-    
+
     /// Procesa un lote de tareas en paralelo
-    pub async fn process_batch<F, T, R>(&self, items: Vec<T>, processor: F) -> Vec<Result<R, String>>
+    pub async fn process_batch<F, T, R>(
+        &self,
+        items: Vec<T>,
+        processor: F,
+    ) -> Vec<Result<R, String>>
     where
         F: Fn(T) -> R + Send + Sync + 'static,
         T: Send + 'static,
         R: Send + 'static,
     {
-        let (tx, rx) = bounded(items.len());
+        use futures::{stream, StreamExt};
+        let limit = self.limits.read().await.max_batch_size.max(1);
         let processor = Arc::new(processor);
-        
-        // Determinar tamaño máximo de lote según la configuración
-        let batch_size = {
-            let limits = self.limits.read().await;
-            limits.max_batch_size.min(items.len())
-        };
-        
-        // Procesar en lotes para no saturar el sistema
-        for chunk in items.chunks(batch_size) {
-            let chunk_vec = chunk.to_vec();
-            let tx_clone = tx.clone();
-            let processor_clone = processor.clone();
-            
-            self.execute(TaskType::Scan, move || {
-                chunk_vec.into_iter().for_each(|item| {
-                    let result = match std::panic::catch_unwind(|| processor_clone(item)) {
-                        Ok(res) => Ok(res),
-                        Err(_) => Err("Panic en procesamiento de tarea".to_string()),
-                    };
-                    tx_clone.send(result).ok();
-                });
-            }).await.ok();
-        }
-        
-        drop(tx);
-        rx.iter().collect()
+        stream::iter(items)
+            .map(|item| {
+                let processor = processor.clone();
+                self.execute(TaskType::Scan, move || processor(item))
+            })
+            .buffered(limit)
+            .collect()
+            .await
     }
-    
+
     /// Actualiza la configuración de rendimiento
     pub async fn update_performance_config(&self, config: PerformanceConfig) {
-        // Calcular nuevo número de hilos según configuración
-        let num_cpus = available_parallelism().map(|p| p.get()).unwrap_or(4);
-        let new_thread_count = if config.low_resource_mode {
-            num_cpus.saturating_div(2).max(1)
-        } else {
-            match config.process_priority {
-                ProcessPriority::Low => num_cpus.saturating_div(3).max(1),
-                ProcessPriority::BelowNormal => num_cpus.saturating_div(2).max(1),
-                ProcessPriority::Normal => num_cpus,
-                ProcessPriority::AboveNormal => num_cpus.saturating_add(1),
-                ProcessPriority::High => num_cpus.saturating_add(2),
-            }
-        };
-        
-        // Actualizar límites
+        let mut limits = self.limits.write().await;
+        let new_thread_count = Workers::thread_count(&config);
+        let mut current = self.performance_config.write();
+        if limits.max_thread_count != new_thread_count
+            || current.low_resource_mode != config.low_resource_mode
         {
-            let mut limits = self.limits.write().await;
-            limits.max_thread_count = new_thread_count;
-            limits.max_cpu_usage = config.cpu_usage_limit.unwrap_or(90);
-            limits.max_batch_size = if config.low_resource_mode { 16 } else { 64 };
-            limits.background_task_interval_ms = if config.low_resource_mode { 5000 } else { 1000 };
+            match Workers::build(&config) {
+                Ok(workers) => *self.workers.write() = Arc::new(workers),
+                Err(e) => {
+                    warn!("No se pudo actualizar el pool de tareas: {e}");
+                    return;
+                }
+            }
         }
-        
-        // Actualizar configuración
-        let mut config_guard = self.performance_config.write().await;
-        *config_guard = config;
-        
-        info!("Configuración de rendimiento actualizada: {} hilos", new_thread_count);
+        limits.max_thread_count = new_thread_count;
+        limits.max_cpu_usage = config.cpu_usage_limit.unwrap_or(90);
+        limits.max_batch_size = if config.low_resource_mode { 16 } else { 64 };
+        limits.background_task_interval_ms = if config.low_resource_mode { 5000 } else { 1000 };
+        *current = config;
     }
-    
+
     /// Programa una tarea periódica con intervalo adaptativo
-    pub async fn schedule_periodic_task<F>(&self, task_type: TaskType, interval: Duration, task: F)
+    pub async fn schedule_periodic_task<F>(&self, _task_type: TaskType, interval: Duration, task: F)
     where
         F: Fn() + Send + Sync + 'static,
     {
         let active = self.active.clone();
         let current_priority = self.current_priority.clone();
-        let limits = self.limits.clone();
+
         let task = Arc::new(task);
-        
+
         tokio::spawn(async move {
             while active.load(Ordering::Relaxed) {
                 // Ajustar intervalo según prioridad actual
@@ -490,45 +438,41 @@ impl ResourceManager {
                         let guard = current_priority.lock().unwrap();
                         *guard
                     };
-                    
+
                     match priority {
                         SystemPriority::Low => interval.saturating_mul(3),
                         SystemPriority::Normal => interval,
-                        SystemPriority::High => interval.saturating_div(2),
+                        SystemPriority::High => interval / 2,
                     }
                 };
-                
+
                 // Ejecutar tarea
                 task();
-                
+
                 // Esperar con intervalo adaptativo
                 time::sleep(adjusted_interval).await;
             }
         });
     }
-    
+
     /// Detiene el gestor de recursos
     pub fn shutdown(&self) {
         self.active.store(false, Ordering::SeqCst);
+        self.workers.read().task_limiter.close();
     }
-    
+
     /// Aplica la prioridad del proceso al sistema operativo
     pub fn apply_process_priority(&self) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         {
             use winapi::um::processthreadsapi::{GetCurrentProcess, SetPriorityClass};
             use winapi::um::winbase::{
-                IDLE_PRIORITY_CLASS,
-                BELOW_NORMAL_PRIORITY_CLASS,
-                NORMAL_PRIORITY_CLASS,
-                ABOVE_NORMAL_PRIORITY_CLASS,
-                HIGH_PRIORITY_CLASS,
+                ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
+                IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
             };
-            
-            let config = match futures::executor::block_on(self.performance_config.read()) {
-                guard => guard.process_priority
-            };
-            
+
+            let config = self.performance_config.read().process_priority;
+
             let priority_class = match config {
                 ProcessPriority::Low => IDLE_PRIORITY_CLASS,
                 ProcessPriority::BelowNormal => BELOW_NORMAL_PRIORITY_CLASS,
@@ -536,87 +480,102 @@ impl ResourceManager {
                 ProcessPriority::AboveNormal => ABOVE_NORMAL_PRIORITY_CLASS,
                 ProcessPriority::High => HIGH_PRIORITY_CLASS,
             };
-            
+
             unsafe {
                 let handle = GetCurrentProcess();
                 if SetPriorityClass(handle, priority_class) == 0 {
-                    return Err(format!("Error al establecer prioridad: {}", std::io::Error::last_os_error()));
+                    return Err(format!(
+                        "Error al establecer prioridad: {}",
+                        std::io::Error::last_os_error()
+                    ));
                 }
             }
-            
+
             info!("Prioridad de proceso aplicada: {:?}", config);
             Ok(())
         }
-        
+
         #[cfg(not(target_os = "windows"))]
         {
-            warn!("Ajuste de prioridad de proceso no disponible en esta plataforma");
-            Ok(())
+            Err("Ajuste de prioridad de proceso disponible solo en Windows".into())
         }
+    }
+}
+
+impl Drop for ResourceManager {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
     use crate::config::PerformanceConfig;
-    
+    use std::thread;
+
     #[tokio::test]
     async fn test_execute_task() {
         let config = PerformanceConfig::default();
         let manager = ResourceManager::new(config);
-        
-        let result = manager.execute(TaskType::Scan, || {
-            thread::sleep(Duration::from_millis(10));
-            42
-        }).await;
-        
+
+        let result = manager
+            .execute(TaskType::Scan, || {
+                thread::sleep(Duration::from_millis(10));
+                42
+            })
+            .await;
+
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
     }
-    
+
     #[tokio::test]
     async fn test_batch_processing() {
         let config = PerformanceConfig::default();
         let manager = ResourceManager::new(config);
-        
+
         let items = vec![1, 2, 3, 4, 5];
         let results = manager.process_batch(items, |i| i * 2).await;
-        
+
         assert_eq!(results.len(), 5);
         assert_eq!(results[0].as_ref().unwrap(), &2);
         assert_eq!(results[4].as_ref().unwrap(), &10);
     }
-    
+
     #[tokio::test]
     async fn test_cache() {
         let config = PerformanceConfig::default();
         let manager = ResourceManager::new(config);
-        
+
         let key = "test_key".to_string();
         let value = vec![1, 2, 3, 4];
-        
+
         manager.cache_result(key.clone(), value.clone(), 60);
         let cached = manager.get_cached_result(&key);
-        
+
         assert!(cached.is_some());
         assert_eq!(cached.unwrap(), value);
+        manager.cache_result(key.clone(), value, 0);
+        assert!(manager.get_cached_result(&key).is_none());
     }
-    
+
     #[tokio::test]
     async fn test_metrics() {
         let config = PerformanceConfig::default();
         let manager = ResourceManager::new(config);
-        
+
         // Ejecutar algunas tareas para generar métricas
         for _ in 0..5 {
-            manager.execute(TaskType::Scan, || {
-                thread::sleep(Duration::from_millis(5));
-            }).await.ok();
+            manager
+                .execute(TaskType::Scan, || {
+                    thread::sleep(Duration::from_millis(5));
+                })
+                .await
+                .ok();
         }
-        
+
         let metrics = manager.get_metrics().await;
         assert!(metrics.timestamp > Instant::now() - Duration::from_secs(10));
     }
-} 
+}

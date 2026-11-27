@@ -1,40 +1,43 @@
-# Instalador de desarrollo de Amaru para Windows
+# Instalador de desarrollo de Amaru para Windows x64
 
-El instalador NSIS empaqueta el ejecutable Rust x64, la configuración del repositorio y el árbol de firmas YARA. Los binarios históricos del directorio `installer/` son anteriores a este procedimiento. La validación del servicio, del escritorio Tauri y de las dependencias nativas en Windows 11 sigue pendiente. El estado de publicación se registra en el [informe de desarrollo](../status_development.md).
+El paquete incluye la interfaz Tauri/Svelte en `amaru-antivirus.exe`, el núcleo y la CLI en `amaru.exe`, la configuración y las reglas YARA oficiales y personalizadas. La versión del paquete y las pruebas de Windows disponibles se registran en el [informe de desarrollo](../status_development.md).
 
-## Requisitos
+## Construcción
 
-Se requiere un entorno Windows de desarrollo con PowerShell 5.1 o superior, Rust para `x86_64-pc-windows-msvc`, Visual Studio Build Tools, las dependencias nativas del proyecto y NSIS 3. El script busca `makensis.exe` en el PATH y en la carpeta NSIS de Program Files (x86).
+En Windows x64 se requieren el toolchain Rust MSVC del proyecto, Visual Studio Build Tools, las dependencias nativas, Node.js y npm, y NSIS 3. El servidor de compilación necesita acceso a las dependencias fijadas en los lockfiles. El equipo de destino requiere Microsoft Edge WebView2 Evergreen Runtime. El instalador comprueba el registro de WebView2 y devuelve el código 2 si falta. [Distribución oficial del runtime](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution)
 
-## Construcción y verificación
-
-Desde la raíz del repositorio, compila y empaqueta el ejecutable del checkout actual con este comando.
+Desde la raíz del repositorio:
 
 ```powershell
 .\scripts\build_installer.ps1 -Force
 ```
 
-El script ejecuta Cargo con `--locked`, comprueba la cabecera PE x64 y compila [unified_installer.nsi](unified_installer.nsi) en un directorio temporal. Solo al concluir NSIS mueve el nuevo instalador a `target\x86_64-pc-windows-msvc\release\AmaruAV-Setup.exe`. Un fallo de compilación termina el comando con error. La ruta de salida puede seguir conteniendo el resultado de una compilación anterior.
+El script instala las dependencias del frontend con `npm ci`, compila sus recursos y ejecuta Cargo con `--locked` para ambos binarios. Tauri usa `custom-protocol` para servir los recursos de la propia aplicación. Antes de ejecutar NSIS se comprueban las cabeceras PE x64 de ambos archivos. El instalador generado se mueve a `target\x86_64-pc-windows-msvc\release\AmaruAV-Setup.exe` tras una compilación correcta. [Script de construcción](../scripts/package.ps1) · [Receta NSIS](unified_installer.nsi)
 
-Para verificar el empaquetado de un ejecutable previamente compilado, ejecuta ambos comandos y comprueba que cada uno termine correctamente.
+Con ambos ejecutables ya compilados en ese directorio, este comando construye un instalador temporal y lo descarta al acabar:
 
 ```powershell
-cargo build --locked --release --package amaru --bin amaru --target x86_64-pc-windows-msvc --target-dir target
 .\scripts\build_installer.ps1 -VerifyOnly
 ```
 
-La verificación descarta el instalador temporal. Una compilación real del proyecto y una prueba de instalación, arranque, detección y desinstalación en Windows 11 siguen siendo necesarias para validar una versión distribuible.
+## Instalación y actualización
 
-## Actualizaciones de desarrollo
+Los accesos directos del escritorio y del menú Inicio abren la GUI. En una ubicación protegida de Program Files, el instalador registra el servicio `AmaruAntivirus` con inicio automático y espera a que arranque. SCM controla el inicio de la protección. El instalador elimina las entradas de autoarranque heredadas de la aplicación en las vistas de registro del equipo y del usuario que ejecuta la instalación.
 
-Una actualización instala los archivos de la aplicación en la carpeta existente y actualiza las firmas oficiales. Conserva los registros, la cuarentena, la configuración, el archivo `.env` y las reglas personalizadas. Cierra Amaru antes de reemplazar el ejecutable. La desinstalación silenciosa también conserva los datos del usuario. Para borrarlos durante una desinstalación interactiva, confirma la pregunta específica sobre la cuarentena y demás datos.
+La ubicación personalizada se puede seleccionar en el asistente o con `/D`, como último argumento de una instalación silenciosa. Fuera de una carpeta protegida de Program Files se instalan la GUI, la CLI y sus recursos. Para registrar el servicio se verifican las ACL del destino y de sus ancestros, los archivos existentes y los puntos de reanálisis. Si ya existe un servicio registrado desde otra instalación, el instalador se detiene. [Comprobación de la ubicación](protected-directory.ps1) · [Control del servicio](service-control.ps1)
 
-El instalador consulta `InstallLocation` en las vistas de registro de 32 y 64 bits. Para una instalación en una ruta personalizada, selecciona esa misma carpeta o indícala explícitamente mediante `/D` en modo silencioso. Si ambas vistas apuntan a carpetas diferentes, la actualización termina con error antes de escribir archivos.
+Para actualizar, cierra el escritorio y selecciona la misma carpeta. El instalador consulta las vistas de registro de 32 y 64 bits y comprueba que ambas identifiquen una sola instalación. Detiene el servicio antes de sustituir los binarios. Si estaba en ejecución, lo vuelve a arrancar. Si estaba detenido, conserva ese estado. Actualiza las firmas oficiales y conserva `config.toml`, `.env`, los registros, la cuarentena y las reglas personalizadas.
 
-Los dos nombres históricos de scripts NSIS usan la misma receta. Para la distribución final siguen pendientes el empaquetado de las dependencias de YARA, Radare2 y ClamAV, sus bases de firmas, el registro y las pruebas del servicio de Windows, la comprobación de integridad de los binarios instalados y la firma del instalador.
+La desinstalación detiene y elimina el servicio de esa ubicación, sus accesos directos y las tareas de análisis rápido cuya acción y ejecutable corresponden a esa copia de Amaru. El modo silencioso conserva los datos del usuario. El asistente interactivo ofrece una opción explícita para borrar la configuración y los datos de la instalación. Los datos del escritorio se guardan en el perfil del usuario.
 
-## Estructura
+## Prueba de la instalación
 
-- [scripts/package.ps1](../scripts/package.ps1) implementa la compilación y la verificación utilizadas por los puntos de entrada.
-- [unified_installer.nsi](unified_installer.nsi) define el empaquetado, los accesos directos, el inicio automático y la desinstalación.
-- [license.txt](license.txt) y [amaru-app.ico](amaru-app.ico) son los recursos que NSIS utiliza al compilar el instalador.
+En un runner Windows x64 desechable, con permisos de administrador, WebView2 instalado y sin una instalación previa de Amaru:
+
+```powershell
+.\scripts\test-installed.ps1
+```
+
+La prueba usa una carpeta propia de Program Files. Verifica los accesos directos, abre una ventana Tauri, ejecuta el autocontrol EICAR, comprueba el análisis rápido y su historial, y consulta el estado del servicio con la CLI y el SCM. Aplica sendas actualizaciones con el servicio detenido y en ejecución. Finalmente desinstala y comprueba que se conserva el contenido de prueba y se retira la tarea programada. [Prueba de instalación](../scripts/test-installed.ps1)
+
+El paquete de desarrollo no incorpora los ejecutables opcionales de Radare2 o ClamAV ni sus bases externas. La publicación de una release firmada y las pruebas de eficacia del antivirus se siguen por separado en el [estado del proyecto](../status_development.md).

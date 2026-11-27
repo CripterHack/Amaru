@@ -93,6 +93,8 @@ impl Default for ScanFrequency {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuarantineConfig {
+    /// Opt in to automatic quarantine after a high-confidence detection.
+    pub auto_quarantine: bool,
     /// Ruta al directorio de cuarentena
     pub quarantine_path: PathBuf,
     
@@ -242,6 +244,7 @@ impl Default for QuarantineConfig {
     fn default() -> Self {
         Self {
             quarantine_path: PathBuf::from("quarantine"),
+            auto_quarantine: false,
             max_size: 1024 * 1024 * 1024, // 1GB
             retention_days: 30,
         }
@@ -283,6 +286,10 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn should_auto_quarantine(&self, risk: crate::RiskLevel) -> bool {
+        self.quarantine_config.auto_quarantine && risk >= crate::RiskLevel::High
+    }
+
     /// Cargar configuración desde archivo
     pub fn load<P: AsRef<std::path::Path>>(path: P) -> io::Result<Self> {
         let content = fs::read_to_string(path)?;
@@ -308,16 +315,8 @@ impl Config {
             ));
         }
 
-        // Verificar rutas monitoreadas
-        for path in &self.monitored_paths {
-            if !path.exists() {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Ruta monitoreada no encontrada: {}", path.display())
-                ));
-            }
-        }
-
+        // The monitor validates watched directories when monitoring starts.
+        // On-demand scanning only requires the selected file and rule catalog.
         // Verificar configuración de cuarentena
         if !self.quarantine_config.quarantine_path.exists() {
             fs::create_dir_all(&self.quarantine_config.quarantine_path)?;
@@ -406,6 +405,19 @@ mod tests {
         assert!(config.realtime_protection);
         assert!(!config.monitored_paths.is_empty());
         assert!(config.scan_config.max_threads > 0);
+    }
+
+    #[test]
+    fn automatic_quarantine_requires_opt_in_and_high_risk() {
+        use crate::RiskLevel::*;
+        let mut config = Config::default();
+        for risk in [Low, Medium, High, Critical] {
+            assert!(!config.should_auto_quarantine(risk));
+        }
+        config.quarantine_config.auto_quarantine = true;
+        assert!(!config.should_auto_quarantine(Medium));
+        assert!(config.should_auto_quarantine(High));
+        assert!(config.should_auto_quarantine(Critical));
     }
 
     #[test]

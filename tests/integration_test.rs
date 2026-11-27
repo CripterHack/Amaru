@@ -1,10 +1,5 @@
-use amaru::{
-    Amaru, Config, Event, RiskLevel, ThreatType,
-    events::{EventChannel, ThreatDetails},
-    quarantine::QuarantineError,
-};
-
-use std::path::PathBuf;
+mod support;
+use amaru::{Amaru, Config, Event, MaliciousBehaviorType, RiskLevel, ThreatType};
 use std::fs::{self, File};
 use std::io::Write;
 use tempfile::tempdir;
@@ -66,8 +61,9 @@ rule test_suspicious {
     // Configurar Amaru
     let mut config = Config::default();
     config.yara_rules_path = rules_dir;
-    config.quarantine_config.quarantine_path = quarantine_dir;
-    config.monitored_paths = vec![monitored_dir];
+    config.quarantine_config.quarantine_path = quarantine_dir.clone();
+    config.monitored_paths = vec![monitored_dir.clone()];
+    config.quarantine_config.auto_quarantine = true;
     config.scan_config.max_threads = 2;
     config.scan_config.scan_timeout = 10;
     
@@ -133,13 +129,13 @@ async fn test_quarantine_workflow() -> Result<(), Box<dyn std::error::Error>> {
     // Configurar Amaru
     let mut config = Config::default();
     config.yara_rules_path = rules_dir;
-    config.quarantine_config.quarantine_path = quarantine_dir;
+    config.quarantine_config.quarantine_path = quarantine_dir.clone();
     
     // Crear instancia de Amaru
     let amaru = Amaru::new(config).await?;
     
     // Poner archivo en cuarentena
-    let quarantine = amaru.quarantine.clone();
+    let quarantine = amaru.quarantine();
     let entry = quarantine.quarantine_file(&test_file, "Test quarantine")?;
     
     // Verificar que el archivo original fue eliminado
@@ -184,7 +180,7 @@ rule test_rule {
     // Configurar Amaru
     let mut config = Config::default();
     config.yara_rules_path = rules_dir;
-    config.quarantine_config.quarantine_path = quarantine_dir;
+    config.quarantine_config.quarantine_path = quarantine_dir.clone();
     
     // Crear instancia de Amaru
     let amaru = Amaru::new(config).await?;
@@ -200,7 +196,8 @@ rule test_rule {
     let _ = amaru.scan_file(&test_file).await?;
     
     // Verificar evento
-    if let Ok(event) = receiver.try_recv() {
+    {
+        let event = receiver.recv_timeout(std::time::Duration::from_secs(5))?;
         match event {
             Event::ThreatDetected { path, threat_type, risk_level, .. } => {
                 assert_eq!(path, test_file);
@@ -239,7 +236,7 @@ rule test_rule {
     // Configurar Amaru
     let mut config = Config::default();
     config.yara_rules_path = rules_dir;
-    config.quarantine_config.quarantine_path = quarantine_dir;
+    config.quarantine_config.quarantine_path = quarantine_dir.clone();
     config.scan_config.max_threads = 4;
     
     // Crear instancia de Amaru
@@ -280,8 +277,8 @@ async fn test_error_handling() -> Result<(), Box<dyn std::error::Error>> {
     
     // Configurar Amaru con reglas inválidas
     let mut config = Config::default();
-    config.yara_rules_path = rules_dir;
-    config.quarantine_config.quarantine_path = quarantine_dir;
+    config.yara_rules_path = rules_dir.clone();
+    config.quarantine_config.quarantine_path = quarantine_dir.clone();
     
     // Crear regla YARA inválida
     let invalid_rule = r#"
@@ -299,6 +296,7 @@ rule invalid {
     assert!(result.is_err());
     
     // Crear instancia con reglas válidas
+    fs::remove_file(rules_dir.join("invalid.yar"))?;
     fs::write(rules_dir.join("valid.yar"), "rule test { condition: true }")?;
     let amaru = Amaru::new(config).await?;
     
@@ -308,8 +306,7 @@ rule invalid {
     
     // Intentar escanear archivo demasiado grande
     let large_file = temp_dir.path().join("large.bin");
-    let mut file = File::create(&large_file)?;
-    file.set_len(config.scan_config.max_file_size + 1)?;
+    File::create(&large_file)?.set_len(amaru.config().scan_config.max_file_size + 1)?;
     
     let result = amaru.scan_file(&large_file).await;
     assert!(result.is_err());
@@ -346,18 +343,18 @@ rule test_malware {
     let content = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xFF\xFF\
         This is a test file that uses VirtualAllocEx and WriteProcessMemory\
         It also contains CreateRemoteThread for process injection";
-    File::create(&test_file)?.write_all(content)?;
+    File::create(&test_file)?.write_all(&support::import_fixture(support::INJECTION, content))?;
     
     // Configurar Amaru
     let mut config = Config::default();
     config.yara_rules_path = rules_dir;
-    config.quarantine_config.quarantine_path = quarantine_dir;
+    config.quarantine_config.quarantine_path = quarantine_dir.clone();
     
     // Crear instancia de Amaru
     let amaru = Amaru::new(config).await?;
     
     // Escanear archivo
-    let result = amaru.scan_file(&test_file).await?;
+    let result = amaru.scan_file_with_options(&test_file, true, false).await?;
     
     // Verificar coincidencias YARA
     assert!(!result.yara_matches.is_empty());
@@ -380,7 +377,7 @@ rule test_malware {
     let details = result.threat_details.unwrap();
     assert!(details.additional_info.is_some());
     let additional_info = details.additional_info.unwrap();
-    assert!(additional_info.get("malicious_behaviors").is_some());
+    assert!(additional_info.get("behaviors").is_some());
     
     Ok(())
 }
@@ -414,18 +411,18 @@ rule test_ransomware {
     let content = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xFF\xFF\
         This ransomware uses BCryptEncrypt to encrypt files\
         It creates .encrypted files and a README.txt";
-    File::create(&test_file)?.write_all(content)?;
+    File::create(&test_file)?.write_all(&support::import_fixture(&[support::ENCRYPTION, support::PERSISTENCE].concat(), content))?;
     
     // Configurar Amaru
     let mut config = Config::default();
     config.yara_rules_path = rules_dir;
-    config.quarantine_config.quarantine_path = quarantine_dir;
+    config.quarantine_config.quarantine_path = quarantine_dir.clone();
     
     // Crear instancia de Amaru
     let amaru = Amaru::new(config).await?;
     
     // Escanear archivo
-    let result = amaru.scan_file(&test_file).await?;
+    let result = amaru.scan_file_with_options(&test_file, true, false).await?;
     
     // Verificar coincidencias YARA
     assert!(!result.yara_matches.is_empty());
@@ -475,18 +472,18 @@ rule test_keylogger {
     let content = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xFF\xFF\
         This keylogger uses SetWindowsHookEx and GetAsyncKeyState\
         It also calls GetKeyboardState to monitor keystrokes";
-    File::create(&test_file)?.write_all(content)?;
+    File::create(&test_file)?.write_all(&support::import_fixture(support::KEY_INPUT, content))?;
     
     // Configurar Amaru
     let mut config = Config::default();
     config.yara_rules_path = rules_dir;
-    config.quarantine_config.quarantine_path = quarantine_dir;
+    config.quarantine_config.quarantine_path = quarantine_dir.clone();
     
     // Crear instancia de Amaru
     let amaru = Amaru::new(config).await?;
     
     // Escanear archivo
-    let result = amaru.scan_file(&test_file).await?;
+    let result = amaru.scan_file_with_options(&test_file, true, false).await?;
     
     // Verificar coincidencias YARA
     assert!(!result.yara_matches.is_empty());
@@ -505,4 +502,4 @@ rule test_keylogger {
     assert!(result.risk_level >= RiskLevel::High);
     
     Ok(())
-} 
+}

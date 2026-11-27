@@ -108,6 +108,15 @@ impl Updater {
 
     /// Install a descriptor obtained through the trusted metadata channel.
     pub async fn apply_update(&self, update: RuleUpdate) -> Result<(), UpdateError> {
+        self.apply_update_checked(update, |_| Ok(())).await
+    }
+
+    /// Validate the authenticated, complete candidate before replacing the installed tree.
+    pub async fn apply_update_checked(
+        &self,
+        update: RuleUpdate,
+        validate: impl FnOnce(&Path) -> Result<(), UpdateError>,
+    ) -> Result<(), UpdateError> {
         let signatures = update.validated_signatures()?;
         let target_version = version(&update.version)?;
         let root_name = self
@@ -174,6 +183,7 @@ impl Updater {
         }
         fs::write(replacement.join("version.txt"), &update.version)?;
 
+        validate(&replacement)?;
         let backup = Builder::new().prefix("backup_").tempdir_in(backups)?;
         copy_tree(&live, backup.path())?;
         fs::rename(&live, &previous)?;

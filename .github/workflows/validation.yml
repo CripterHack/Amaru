@@ -52,6 +52,8 @@ jobs:
           echo "0dddf90e217e38a6a658881b9ec7e217198487c75b7f82a332b3cbd30834636f  $package" | sha256sum -c -
           sudo dpkg -i "$package"
           cargo test --locked -p radare2-analyzer
+          cargo test --locked -p amaru --all-targets
+          cargo test --locked --manifest-path gui/src-tauri/Cargo.toml
 
   frontend:
     runs-on: ubuntu-24.04

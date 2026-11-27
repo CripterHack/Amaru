@@ -1,16 +1,16 @@
 // Módulo para análisis heurístico de archivos
 // Este componente implementa detección avanzada basada en patrones de comportamiento
 
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
+use object::Object;
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::Read;
 use thiserror::Error;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
-use dashmap::DashMap;
-use std::sync::{Arc, Mutex};
-use rayon::prelude::*;
+
 use std::time::Instant;
 
 /// Errores específicos del análisis heurístico
@@ -110,19 +110,8 @@ enum PatternType {
     ByteSequence(Vec<u8>),
     Regex(regex::bytes::Regex),
     EntropyCheck { min: f64, max: f64 },
-    PeHeader(PeHeaderCheck),
-    ApiUsage(Vec<String>),
-}
-
-/// Verificaciones específicas para encabezados PE
-#[derive(Debug, Clone)]
-enum PeHeaderCheck {
-    SectionName(String),
-    ImportedDll(String),
     ImportedFunction(String),
-    ExportedFunction(String),
-    ResourceType(u32),
-    Characteristic(u32),
+    ApiUsage(Vec<String>),
 }
 
 /// Implementación del motor de análisis heurístico
@@ -130,7 +119,6 @@ enum PeHeaderCheck {
 pub struct HeuristicEngine {
     config: HeuristicConfig,
     patterns: Vec<HeuristicPattern>,
-    cache: Arc<DashMap<String, HeuristicResult>>,
 }
 
 impl HeuristicEngine {
@@ -141,14 +129,12 @@ impl HeuristicEngine {
         Self {
             config,
             patterns: default_patterns,
-            cache: Arc::new(DashMap::new()),
         }
     }
     
     /// Analizar un archivo usando métodos heurísticos
     pub fn analyze_file(&self, path: impl AsRef<Path>) -> Result<HeuristicResult, HeuristicError> {
         let path = path.as_ref();
-        let start = Instant::now();
         
         debug!("Iniciando análisis heurístico: {}", path.display());
         
@@ -161,20 +147,39 @@ impl HeuristicEngine {
         }
         
         // Leer contenido del archivo
-        let mut file = fs::File::open(path)?;
+        let file = fs::File::open(path)?;
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
+        file.take(self.config.max_file_size.saturating_add(1)).read_to_end(&mut buffer)?;
+        self.analyze_bytes(path, &buffer)
+    }
+
+    /// Analyze the same bounded snapshot as the signature scanner.
+    pub fn analyze_bytes(&self, path: &Path, buffer: &[u8]) -> Result<HeuristicResult, HeuristicError> {
+        if buffer.len() as u64 > self.config.max_file_size {
+            return Err(HeuristicError::FileTooLarge(path.display().to_string()));
+        }
+        let start = Instant::now();
         
         // Análisis básico de entropía
-        let entropy = Self::calculate_entropy(&buffer);
+        let entropy = Self::calculate_entropy(buffer);
         let mut score = 0;
         let mut matches = Vec::new();
         
+        // Imported names reference the PE import table, not arbitrary strings in the payload.
+        let imports = if buffer.starts_with(b"MZ") && (self.config.pe_analysis || self.config.behavioral_analysis) {
+            object::File::parse(buffer).ok()
+                .filter(|file| file.format() == object::BinaryFormat::Pe)
+                .and_then(|file| file.imports().ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         // Verificar patrones de bytes
         for pattern in &self.patterns {
             match &pattern.pattern_type {
                 PatternType::ByteSequence(bytes) => {
-                    let locations = Self::find_byte_pattern(&buffer, bytes);
+                    let locations = Self::find_byte_pattern(buffer, bytes);
                     if !locations.is_empty() {
                         score += pattern.weight;
                         matches.push(PatternMatch {
@@ -186,7 +191,7 @@ impl HeuristicEngine {
                     }
                 }
                 PatternType::Regex(re) => {
-                    let locations: Vec<_> = re.find_iter(&buffer).map(|m| m.start()).collect();
+                    let locations: Vec<_> = re.find_iter(buffer).map(|m| m.start()).collect();
                     if !locations.is_empty() {
                         score += pattern.weight;
                         matches.push(PatternMatch {
@@ -208,27 +213,32 @@ impl HeuristicEngine {
                         });
                     }
                 }
-                PatternType::PeHeader(check) => {
-                    // Implementar análisis PE si está habilitado
-                    if self.config.pe_analysis {
-                        if let Some(locations) = self.check_pe_header(&buffer, check) {
-                            score += pattern.weight;
-                            matches.push(PatternMatch {
-                                pattern_name: pattern.name.clone(),
-                                description: pattern.description.clone(),
-                                weight: pattern.weight,
-                                locations,
-                            });
-                        }
+                PatternType::ImportedFunction(name) if self.config.pe_analysis => {
+                    if imports.iter().any(|entry| entry.name() == name.as_bytes()) {
+                        score += pattern.weight;
+                        matches.push(PatternMatch {
+                            pattern_name: pattern.name.clone(),
+                            description: format!("{}: {}", pattern.description, name),
+                            weight: pattern.weight,
+                            locations: Vec::new(),
+                        });
                     }
                 }
-                PatternType::ApiUsage(apis) => {
-                    // Análisis de uso de API (dependiente del OS)
-                    if self.config.behavioral_analysis {
-                        // Esta funcionalidad requeriría integración con un módulo de análisis dinámico
-                        // Por ahora es un stub para futura implementación
+                PatternType::ApiUsage(apis) if self.config.behavioral_analysis => {
+                    let observed: Vec<_> = apis.iter().filter(|api| {
+                        imports.iter().any(|entry| entry.name() == api.as_bytes())
+                    }).map(String::as_str).collect();
+                    if !observed.is_empty() {
+                        score += pattern.weight;
+                        matches.push(PatternMatch {
+                            pattern_name: pattern.name.clone(),
+                            description: format!("{}: {}", pattern.description, observed.join(", ")),
+                            weight: pattern.weight,
+                            locations: Vec::new(),
+                        });
                     }
                 }
+                _ => {}
             }
         }
         
@@ -247,11 +257,7 @@ impl HeuristicEngine {
             patterns: matches,
             score,
         };
-        
-        // Almacenar en caché
-        let file_key = path.to_string_lossy().to_string();
-        self.cache.insert(file_key, result.clone());
-        
+
         Ok(result)
     }
     
@@ -261,7 +267,7 @@ impl HeuristicEngine {
             return 0.0;
         }
         
-        let mut counts = [0u32; 256];
+        let mut counts = [0usize; 256];
         for &byte in data {
             counts[byte as usize] += 1;
         }
@@ -293,13 +299,6 @@ impl HeuristicEngine {
         }
         
         positions
-    }
-    
-    /// Verificar encabezados PE
-    fn check_pe_header(&self, data: &[u8], check: &PeHeaderCheck) -> Option<Vec<usize>> {
-        // Implementación simplificada - en un caso real
-        // esto utilizaría una librería para parsear PE como goblin o pelite
-        None
     }
     
     /// Determinar el tipo de amenaza y nivel de confianza
@@ -383,7 +382,7 @@ impl HeuristicEngine {
         // Patrones de rootkit
         patterns.push(HeuristicPattern {
             name: "rootkit_system_hook".to_string(),
-            pattern_type: PatternType::PeHeader(PeHeaderCheck::ImportedFunction("NtCreateFile".to_string())),
+            pattern_type: PatternType::ImportedFunction("NtCreateFile".to_string()),
             weight: 60,
             description: "Funciones usadas para interceptar operaciones del sistema".to_string(),
         });

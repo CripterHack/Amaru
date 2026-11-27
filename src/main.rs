@@ -3,12 +3,15 @@ mod eicar_self_test;
 
 use amaru::{Amaru, Config};
 use clap::Parser;
-use cli::{Cli, Commands, MonitorAction, ServiceAction};
+use cli::{Cli, Commands};
+#[cfg(windows)]
+use cli::{MonitorAction, ServiceAction};
 use log::{info, LevelFilter};
 use rayon::ThreadPoolBuilder;
 use std::{env, path::Path, process};
 use sysinfo::{System, SystemExt};
 
+#[cfg(windows)]
 fn control_service(action: ServiceAction) -> Result<(), Box<dyn std::error::Error>> {
     use amaru::service;
     match action {
@@ -30,41 +33,184 @@ fn default_config_path() -> std::path::PathBuf {
         .unwrap_or_else(|| "config.toml".into())
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+type CliResult = Result<(), Box<dyn std::error::Error>>;
+
+fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
+    let mut config = Config::load(path)?;
+    config.yara_rules_path = path.with_file_name(config.yara_rules_path);
+    config.quarantine_config.quarantine_path =
+        path.with_file_name(config.quarantine_config.quarantine_path);
+    Ok(config)
+}
+
+async fn scan(
+    amaru: &Amaru,
+    path: &Path,
+    recursive: bool,
+    heuristic: bool,
+    radare2: bool,
+    detailed: bool,
+) -> CliResult {
+    let metadata = std::fs::metadata(path)?;
+    if detailed && !metadata.is_file() {
+        return Err(format!("Expected a file to analyze: {}", path.display()).into());
+    }
+    let walk = walkdir::WalkDir::new(path).max_depth(if recursive { usize::MAX } else { 1 });
+    let mut errors = 0;
+    for entry in walk {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!("{error}");
+                errors += 1;
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() && !(entry.depth() == 0 && metadata.is_file()) {
+            continue;
+        }
+        match amaru
+            .scan_file_with_options(entry.path(), heuristic, radare2)
+            .await
+        {
+            Ok(result) => {
+                let rules: Vec<_> = result
+                    .yara_matches
+                    .iter()
+                    .map(|m| m.rule_name.as_str())
+                    .collect();
+                println!(
+                    "{}  {:?}  {}",
+                    result.path.display(),
+                    result.risk_level,
+                    rules.join(", ")
+                );
+                if detailed {
+                    println!("SHA-256  {}", result.sha256);
+                    if let Some(report) = result.static_analysis {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    }
+                    if let Some(report) = result.heuristic_result {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    }
+                    if let Some(report) = result.behaviors {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("{}: {error}", entry.path().display());
+                errors += 1;
+            }
+        }
+    }
+    if errors > 0 {
+        return Err(format!("Scan incomplete: {errors} error(s)").into());
+    }
+    Ok(())
+}
+
+async fn update(config_path: &Path, rules: bool, clamav: bool, heuristic: bool) -> CliResult {
+    if heuristic {
+        return Err(
+            "Heuristic patterns are compiled into Amaru and update with the application".into(),
+        );
+    }
+    if rules || !clamav {
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        let services = amaru::CoreServices::new(load_config(config_path)?, tx)?;
+        if services.update_rules().await? {
+            println!("Signed YARA rule update applied.");
+        } else {
+            println!("YARA rules are current.");
+        }
+    }
+    if clamav {
+        let status = tokio::process::Command::new("freshclam")
+            .status()
+            .await
+            .map_err(|err| format!("Could not start ClamAV freshclam: {err}"))?;
+        if !status.success() {
+            return Err(format!("freshclam failed ({status})").into());
+        }
+    }
+    Ok(())
+}
+
+async fn execute(cli: Cli) -> CliResult {
+    let config_path = cli.config.unwrap_or_else(default_config_path);
+    match cli.command {
+        Commands::TestEicar => eicar_self_test::run(&config_path),
+        Commands::Scan {
+            path,
+            recursive,
+            heuristic,
+            radare2,
+        } => {
+            let amaru = Amaru::new(load_config(&config_path)?).await?;
+            let heuristic = heuristic.unwrap_or(amaru.config().heuristic_analysis);
+            scan(&amaru, &path, recursive, heuristic, radare2, false).await
+        }
+        Commands::Analyze {
+            file,
+            heuristic,
+            radare2,
+        } => {
+            let amaru = Amaru::new(load_config(&config_path)?).await?;
+            let heuristic = heuristic.unwrap_or(amaru.config().heuristic_analysis);
+            scan(&amaru, &file, false, heuristic, radare2, true).await
+        }
+        Commands::Update {
+            rules,
+            clamav,
+            heuristic,
+        } => update(&config_path, rules, clamav, heuristic).await,
+        Commands::Reload { rules } => {
+            if !rules {
+                return Err("Specify --rules to reload YARA signatures".into());
+            }
+            #[cfg(windows)]
+            {
+                let mut client = Amaru::create_ipc_client()?;
+                client.update_rules()?;
+                println!("The Windows service reloaded its YARA rules.");
+                Ok(())
+            }
+            #[cfg(not(windows))]
+            {
+                Err("Reloading a running service requires Windows".into())
+            }
+        }
+        #[cfg(windows)]
+        Commands::ServiceRun => Ok(amaru::service::run_service()?),
+        #[cfg(windows)]
+        Commands::Service { action } => control_service(action),
+        #[cfg(windows)]
+        Commands::Monitor { action } => control_service(match action {
+            MonitorAction::Start => ServiceAction::Start,
+            MonitorAction::Stop => ServiceAction::Stop,
+            MonitorAction::Status => ServiceAction::Status,
+        }),
+        #[cfg(windows)]
+        Commands::Autostart { enable } => Ok(amaru::service::set_autostart(enable)?),
+        #[cfg(not(windows))]
+        Commands::ServiceRun
+        | Commands::Service { .. }
+        | Commands::Monitor { .. }
+        | Commands::Autostart { .. } => Err("Service control and autostart require Windows".into()),
+    }
+}
+
+async fn run() -> CliResult {
     env_logger::builder().filter_level(LevelFilter::Info).init();
     let args: Vec<_> = env::args_os().skip(1).collect();
-    let config_path = match args.as_slice() {
+    let path = match args.as_slice() {
         [] => default_config_path(),
         [path] if Path::new(path).extension().is_some_and(|ext| ext == "toml") => path.into(),
-        _ => match Cli::parse().command {
-            Commands::ServiceRun => return Ok(amaru::service::run_service()?),
-            Commands::Service { action } => return control_service(action),
-            Commands::Monitor { action } => {
-                let action = match action {
-                    MonitorAction::Start => ServiceAction::Start,
-                    MonitorAction::Stop => ServiceAction::Stop,
-                    MonitorAction::Status => ServiceAction::Status,
-                };
-                return control_service(action);
-            }
-            Commands::Autostart { enable } => return Ok(amaru::service::set_autostart(enable)?),
-            Commands::TestEicar { config } => {
-                let path = config.unwrap_or_else(default_config_path);
-                return eicar_self_test::run(&path);
-            }
-            _ => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "This command is awaiting integration with the Windows backend",
-                )
-                .into())
-            }
-        },
+        _ => return execute(Cli::parse()).await,
     };
-
     optimize_for_system()?;
-    let mut config = Config::load(&config_path)?;
-    config.yara_rules_path = config_path.with_file_name(config.yara_rules_path);
+    let config = load_config(&path)?;
     let monitor = config.realtime_protection;
     let mut amaru = Amaru::new(config).await?;
     if monitor {

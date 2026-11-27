@@ -2,9 +2,10 @@
   import { onMount } from 'svelte';
   import { writable, type Writable } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/tauri';
+  import { manageListeners } from './lib/tauriEvents';
   import { listen } from '@tauri-apps/api/event';
   import type { ProtectionStatus } from './lib/stores/statusStore';
-  import { theme } from './lib/stores/theme';
+  import { applyThemePreference } from './lib/stores/theme';
   import { notify } from './lib/components/Notifications.svelte';
   
   // Components
@@ -23,80 +24,24 @@
   
   // State
   let route: Writable<string> = writable('dashboard');
-  let scanning = false;
   const protectionStatus = writable<ProtectionStatus | null>(null);
   let togglingProtection = false;
 
   // Event listeners
-  async function setupListeners() {
-    // Listen for threat detection events
-    await listen('threat-detected', (event) => {
-      const payload = event.payload as any;
-      notify(
-        'Threat Detected', 
-        `Threat detected: ${payload.name} in ${payload.path}`, 
-        'warning'
-      );
-    });
-    
-    // Listen for scan progress events
-    await listen('scan-progress', (event) => {
-      scanning = true;
-    });
-    
-    // Listen for scan completed events
-    await listen('scan-completed', (event) => {
-      scanning = false;
-      const payload = event.payload as any;
-      notify(
-        'Scan Completed', 
-        `Scan completed: ${payload.threats_found} threats found`, 
-        'success'
-      );
-    });
-    
-    // Listen for scan error events
-    await listen('scan-error', (event) => {
-      scanning = false;
-      const payload = event.payload as any;
-      notify(
-        'Scan Error', 
-        `Scan error: ${payload}`, 
-        'error'
-      );
-    });
-    
-    // Listen for protection status changes
-    await listen<{ enabled: boolean; monitoredPaths: string[] }>('protection-status-changed', (event) => {
-      const payload = event.payload;
-      if ($protectionStatus) {
-        $protectionStatus = {
-          ...$protectionStatus,
-          enabled: payload.enabled,
-          monitored_paths: payload.monitoredPaths
-        };
-      } else {
-        void loadProtectionStatus();
-      }
-
-      notify(
-        'Protection Status', 
-        `Protection ${payload.enabled ? 'enabled' : 'disabled'}`, 
-        'info'
-      );
-    });
-    
-    // Listen for signature updates
-    await listen('signatures-updated', (event) => {
-      const payload = event.payload as any;
-      notify(
-        'Signatures Updated', 
-        `Signatures updated: ${payload.rules_added} new rules added`, 
-        'success'
-      );
-    });
+  function setupListeners() {
+    return manageListeners([
+      listen<{name:string; path:string}>('threat-detected', ({payload}) => notify('Threat detected', `${payload.name} in ${payload.path}`, 'warning')),
+      listen<{status:string; threats_found:number}>('scan-completed', ({payload}) =>
+        notify('Scan finished', `${payload.status}: ${payload.threats_found} finding(s)`, payload.status === 'completed' ? 'success' : 'warning')),
+      listen<string>('scan-error', ({payload}) => notify('Scan error', payload, 'error')),
+      listen<{ enabled: boolean; monitoredPaths: string[] }>('protection-status-changed', ({payload}) => {
+        if ($protectionStatus) {
+          $protectionStatus = { ...$protectionStatus, enabled: payload.enabled, monitored_paths: payload.monitoredPaths };
+        } else { void loadProtectionStatus(); }
+      })
+    ]);
   }
-  
+
   // Load initial protection status
   async function loadProtectionStatus() {
     try {
@@ -142,13 +87,9 @@
   
   // Initialize
   onMount(() => {
-    // Setup event listeners and load initial state
-    const setup = async () => {
-      await setupListeners();
-      await loadProtectionStatus();
-    };
-    setup();
-    
+    const stopEvents = setupListeners();
+    void loadProtectionStatus();
+
     // Handle hash-based routing
     const handleHashChange = () => {
       const hash = window.location.hash.slice(1) || '/';
@@ -162,29 +103,12 @@
     // Listen for hash changes
     window.addEventListener('hashchange', handleHashChange);
     
-    // Check system theme preference
-    const prefersDarkScheme = window.matchMedia('(prefers-color-scheme: dark)');
-    
-    const setTheme = (isDark: boolean) => {
-      if (isDark) {
-        document.documentElement.classList.add('dark');
-        theme.set("dark");
-      } else {
-        document.documentElement.classList.remove('dark');
-        theme.set("light");
-      }
-    };
-    
-    // Set initial theme
-    setTheme(prefersDarkScheme.matches);
-    
-    // Proper event listener with specific callback reference for easy cleanup
-    const handleThemeChange = (e: MediaQueryListEvent) => setTheme(e.matches);
-    prefersDarkScheme.addEventListener('change', handleThemeChange);
-    
+    const stopTheme = applyThemePreference();
+
     return () => {
+      stopEvents();
       window.removeEventListener('hashchange', handleHashChange);
-      prefersDarkScheme.removeEventListener('change', handleThemeChange);
+      stopTheme();
     };
   });
 </script>

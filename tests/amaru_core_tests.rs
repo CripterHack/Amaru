@@ -1,4 +1,4 @@
-use amaru::{Amaru, AmaruError, Config, ScanResult, RiskLevel, ThreatType};
+use amaru::{Amaru, AmaruError, Config, RiskLevel};
 use std::path::{Path, PathBuf};
 use std::fs::{self, File};
 use std::io::Write;
@@ -9,15 +9,18 @@ use tokio::time::sleep;
 #[tokio::test]
 async fn test_initialization() -> Result<(), AmaruError> {
     // Create a temporary config
-    let config = Config::default();
+    let sandbox = tempdir()?;
+    let mut config = Config::default();
+    config.quarantine_config.quarantine_path = sandbox.path().join("quarantine");
     
     // Initialize Amaru
     let amaru = Amaru::new(config).await?;
     
     // Verify initialization succeeded by checking the components
-    assert!(amaru.yara_engine.is_some(), "YARA engine should be initialized");
-    assert!(amaru.heuristic_engine.is_none(), "Heuristic engine should not be initialized by default");
-    assert!(amaru.realtime_monitor.is_none(), "Real-time monitor should not be initialized by default");
+    let result = amaru.scan_file("test-eicar.txt").await?;
+    assert!(result.yara_matches.iter().any(|rule| rule.rule_name == "EICAR_Test_File"));
+    assert!(amaru.config().heuristic_analysis);
+    assert!(!amaru.realtime_enabled());
     
     Ok(())
 }
@@ -34,6 +37,7 @@ async fn test_scan_clean_file() -> Result<(), AmaruError> {
     
     // Create config
     let mut config = Config::default();
+    config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
     config.yara_rules_path = PathBuf::from("signatures/official");
     
     // Initialize Amaru
@@ -43,7 +47,7 @@ async fn test_scan_clean_file() -> Result<(), AmaruError> {
     let result = amaru.scan_file(&file_path).await?;
     
     // Verify the result
-    assert_eq!(result.risk_level, RiskLevel::Safe, "Clean file should be marked as safe");
+    assert_eq!(result.risk_level, RiskLevel::Low, "Clean file should be marked as safe");
     assert!(result.yara_matches.is_empty(), "Clean file should have no YARA matches");
     assert!(result.threat_details.is_none(), "Clean file should have no threat details");
     
@@ -62,6 +66,7 @@ async fn test_scan_malicious_file() -> Result<(), AmaruError> {
     
     // Create config with test rules
     let mut config = Config::default();
+    config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
     config.yara_rules_path = PathBuf::from("signatures/official");
     
     // Initialize Amaru
@@ -90,7 +95,8 @@ async fn test_heuristic_engine() -> Result<(), AmaruError> {
     
     // Create config with heuristic engine enabled
     let mut config = Config::default();
-    config.enable_heuristic_engine = true;
+    config.heuristic_analysis = true;
+    config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
     config.yara_rules_path = PathBuf::from("signatures/official");
     
     // Initialize Amaru
@@ -103,7 +109,7 @@ async fn test_heuristic_engine() -> Result<(), AmaruError> {
     let result = amaru.scan_file(&file_path).await?;
     
     // Verify the heuristic engine was used in the analysis
-    assert!(amaru.heuristic_engine.is_some(), "Heuristic engine should be initialized");
+    assert!(result.heuristic_result.is_some(), "Heuristic engine should be initialized");
     
     Ok(())
 }
@@ -131,14 +137,14 @@ async fn test_quarantine_system() -> Result<(), AmaruError> {
     let amaru = Amaru::new(config).await?;
     
     // Quarantine the file
-    let original_path = amaru.quarantine.quarantine_file(&file_path, "Test quarantine")?;
+    let original_path = amaru.quarantine_file(&file_path, "Test quarantine")?;
     
     // Verify file was moved to quarantine
     assert!(!file_path.exists(), "Original file should no longer exist");
     assert!(fs::read_dir(&quarantine_dir).unwrap().count() > 0, "Quarantine directory should contain at least one file");
     
     // Restore the file
-    let restored_path = amaru.quarantine.restore_file(&original_path)?;
+    let restored_path = amaru.restore_quarantined(&original_path.quarantine_name)?;
     
     // Verify file was restored
     assert!(restored_path.exists(), "File should be restored");
@@ -155,8 +161,9 @@ async fn test_realtime_protection() -> Result<(), AmaruError> {
     
     // Create config with real-time protection enabled
     let mut config = Config::default();
-    config.enable_realtime_protection = true;
-    config.realtime_config.paths = vec![temp_dir.path().to_path_buf()];
+    config.realtime_protection = true;
+    config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
+    config.monitored_paths = vec![temp_dir.path().to_path_buf()];
     config.yara_rules_path = PathBuf::from("signatures/official");
     
     // Initialize Amaru
@@ -166,7 +173,7 @@ async fn test_realtime_protection() -> Result<(), AmaruError> {
     amaru.enable_realtime_protection().await?;
     
     // Verify real-time protection was enabled
-    assert!(amaru.realtime_monitor.is_some(), "Real-time monitor should be initialized");
+    assert!(amaru.realtime_enabled(), "Real-time monitor should be initialized");
     
     // Create a test file in the monitored directory
     let file_path = temp_dir.path().join("monitored_file.txt");
@@ -180,7 +187,7 @@ async fn test_realtime_protection() -> Result<(), AmaruError> {
     amaru.disable_realtime_protection().await?;
     
     // Verify real-time protection was disabled
-    assert!(amaru.realtime_monitor.is_none(), "Real-time monitor should be disabled");
+    assert!(!amaru.realtime_enabled(), "Real-time monitor should be disabled");
     
     Ok(())
 }
@@ -189,8 +196,9 @@ async fn test_realtime_protection() -> Result<(), AmaruError> {
 async fn test_resource_management() -> Result<(), AmaruError> {
     // Create config with resource management settings
     let mut config = Config::default();
-    config.resource_config.max_cpu_usage = 0.5; // 50% CPU usage limit
-    config.resource_config.max_memory_mb = 1024; // 1GB memory limit
+    let sandbox = tempdir()?;
+    config.quarantine_config.quarantine_path = sandbox.path().join("quarantine");
+    config.performance_config.cpu_usage_limit = Some(50);
     config.yara_rules_path = PathBuf::from("signatures/official");
     
     // Initialize Amaru
@@ -209,7 +217,9 @@ async fn test_resource_management() -> Result<(), AmaruError> {
 #[tokio::test]
 async fn test_update_yara_rules() -> Result<(), AmaruError> {
     // Create config
-    let config = Config::default();
+    let sandbox = tempdir()?;
+    let mut config = Config::default();
+    config.quarantine_config.quarantine_path = sandbox.path().join("quarantine");
     
     // Initialize Amaru
     let amaru = Amaru::new(config).await?;
@@ -234,7 +244,7 @@ async fn test_integrated_scan() -> Result<(), AmaruError> {
     
     // Create config with core services enabled
     let mut config = Config::default();
-    config.enable_core_services = true;
+    config.quarantine_config.quarantine_path = temp_dir.path().join("quarantine");
     config.yara_rules_path = PathBuf::from("signatures/official");
     
     // Initialize Amaru
@@ -247,7 +257,7 @@ async fn test_integrated_scan() -> Result<(), AmaruError> {
     let result = amaru.integrated_scan_file(&file_path).await?;
     
     // Verify the scan completed
-    assert!(result.scan_complete, "Integrated scan should complete");
+    assert_eq!(Path::new(&result.path), file_path);
     
     Ok(())
 }
@@ -263,7 +273,9 @@ async fn test_scan_optimization() -> Result<(), AmaruError> {
     file.write_all(b"Test file for optimized scan").expect("Failed to write test file");
     
     // Create config
-    let config = Config::default();
+    let sandbox = tempdir()?;
+    let mut config = Config::default();
+    config.quarantine_config.quarantine_path = sandbox.path().join("quarantine");
     
     // Initialize Amaru
     let amaru = Amaru::new(config).await?;
@@ -283,4 +295,30 @@ async fn test_scan_optimization() -> Result<(), AmaruError> {
     assert!(duration.as_millis() < 100, "Cached scan should be very fast");
     
     Ok(())
-} 
+}
+
+#[test]
+fn cli_respects_scan_depth_and_analysis_options() -> std::io::Result<()> {
+    use std::process::Command;
+    let temp = tempdir()?;
+    fs::create_dir_all(temp.path().join("inputs/nested"))?;
+    fs::write(temp.path().join("inputs/clean.txt"), b"plain")?;
+    fs::write(temp.path().join("inputs/nested/eicar.txt"), include_bytes!("../test-eicar.txt"))?;
+    fs::create_dir(temp.path().join("rules"))?;
+    fs::write(temp.path().join("rules/eicar.yar"), include_bytes!("../signatures/official/eicar_test.yar"))?;
+    fs::write(temp.path().join("settings.toml"), "yara_rules_path='rules'")?;
+
+    let run = |arguments: &[&str]| -> std::io::Result<String> {
+        let output = Command::new(env!("CARGO_BIN_EXE_amaru"))
+            .current_dir(temp.path())
+            .args(["--config", "settings.toml"]).args(arguments).output()?;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let shallow = run(&["scan", "--path", "inputs", "--recursive=false", "--heuristic=false"])?;
+    assert!(shallow.contains("clean.txt"));
+    assert!(!shallow.contains("eicar.txt"));
+    assert!(run(&["scan", "--path", "inputs"])?.contains("EICAR_Test_File"));
+    assert!(run(&["analyze", "--file", "inputs/clean.txt", "--radare2=false", "--heuristic=false"])?.contains("SHA-256"));
+    Ok(())
+}
