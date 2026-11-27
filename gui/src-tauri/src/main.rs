@@ -1,5 +1,11 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
+// Resolve WaitOnAddress and WakeByAddress* from the Windows SDK before Tauri 1's
+// transitive windows 0.37/0.39 import libraries can bind them to the enclave DLL.
+#[cfg(windows)]
+#[link(name = "synchronization")]
+unsafe extern "system" {}
+
 #[cfg(windows)]
 mod desktop;
 #[cfg(any(windows, test))]

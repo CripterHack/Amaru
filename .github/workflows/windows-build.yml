@@ -40,15 +40,13 @@ jobs:
       - name: Run core, service and CLI tests on Windows
         id: native_tests
         continue-on-error: true
-        run: cargo test --locked --package amaru --lib --bins --tests
-      - name: Inspect Windows test process startup on failure
-        if: steps.native_tests.outcome == 'failure'
-        continue-on-error: true
-        shell: pwsh
         run: |
-          ./scripts/diagnose-startup.ps1
+          ./scripts/check-windows-imports.ps1
+          cargo test --locked --package amaru --lib --bins --tests
       - name: Build the desktop application and installer
         run: ./scripts/package.ps1
+      - name: Verify native imports in both release executables
+        run: ./scripts/check-windows-imports.ps1 -Release
       - name: Exercise the installed application, upgrade and uninstall
         run: ./scripts/test-installed.ps1
       - name: Require successful native tests
