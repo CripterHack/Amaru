@@ -210,16 +210,13 @@ impl SecurityManager {
         }
         
         // Check log integrity
-        let log_integrity = self.secure_logger.verify_log_integrity(&self.secure_logger.current_log_file).await
-            .map_err(|e| SecurityError::LoggingError(e))?;
-        
-        if !log_integrity {
-            result.log_integrity_passed = false;
-            result.log_integrity_failures.push(
-                self.secure_logger.current_log_file.to_string_lossy().to_string()
-            );
+        for (path, valid) in self.secure_logger.verify_all_logs().await? {
+            if !valid {
+                result.log_integrity_passed = false;
+                result.log_integrity_failures.push(path.display().to_string());
+            }
         }
-        
+
         Ok(result)
     }
     

@@ -1,6 +1,6 @@
 # Mejoras en el Sistema de Detección
 
-Amaru Antivirus ha implementado importantes mejoras en su sistema de detección para proporcionar una protección aún más efectiva contra las amenazas digitales actuales y emergentes. Este documento detalla las nuevas capacidades y beneficios que obtendrás con estas actualizaciones.
+Esta guía recoge los objetivos de mejora del motor y los criterios pendientes para acreditar sus beneficios. La compilación de las reglas distribuidas y la detección del corpus EICAR tienen pruebas reproducibles. La validación de aprendizaje automático, servicios en la nube y detección de amenazas reales requiere evidencia adicional. [Estado de desarrollo](../../status_development.md) · [Prueba de firmas](../technical/eicar-corpus.md)
 
 ## Índice
 
@@ -13,11 +13,11 @@ Amaru Antivirus ha implementado importantes mejoras en su sistema de detección 
 
 ## Nuevos Algoritmos de Detección
 
-Hemos incorporado tecnologías de vanguardia para detectar amenazas con mayor efectividad:
+La hoja de ruta contempla tres líneas de trabajo.
 
 ### Detección basada en Inteligencia Artificial
 
-Amaru ahora utiliza modelos avanzados de aprendizaje automático que:
+Los modelos propuestos tienen como objetivos:
 
 - **Identifican patrones complejos** en archivos y comportamientos que los métodos tradicionales podrían pasar por alto
 - **Aprenden y mejoran constantemente** a partir de nuevas amenazas detectadas
@@ -25,7 +25,7 @@ Amaru ahora utiliza modelos avanzados de aprendizaje automático que:
 
 ### Análisis de Comportamiento Mejorado
 
-Nuestro sistema ahora examina el comportamiento de los programas con mayor profundidad:
+La especificación de análisis de comportamiento contempla:
 
 - **Secuencias de actividades sospechosas**: Detecta combinaciones de acciones potencialmente maliciosas
 - **Grafos de comportamiento**: Analiza las relaciones entre diferentes acciones para identificar patrones maliciosos
@@ -33,7 +33,7 @@ Nuestro sistema ahora examina el comportamiento de los programas con mayor profu
 
 ### Detección Especializada por Tipo de Amenaza
 
-Hemos implementado algoritmos específicos para diferentes categorías de amenazas:
+Las categorías propuestas para algoritmos específicos incluyen:
 
 - **Anti-Ransomware**: Detección temprana de comportamientos de cifrado malicioso
 - **Anti-Rootkit**: Técnicas avanzadas para detectar malware que se oculta profundamente en el sistema
@@ -42,11 +42,11 @@ Hemos implementado algoritmos específicos para diferentes categorías de amenaz
 
 ## Mayor Precisión en la Detección
 
-Hemos implementado mejoras significativas para reducir los falsos positivos y aumentar la precisión de detección:
+Los cambios propuestos buscan reducir los falsos positivos y aumentar la precisión. Para medir su efecto se necesitan corpus distintos de amenazas y software legítimo.
 
 ### Sistema Multi-verificación
 
-Cada posible amenaza se evalúa a través de múltiples mecanismos antes de tomar acción:
+El diseño prevé contrastar cada alerta antes de actuar.
 
 - **Verificación cruzada**: Contrasta resultados de diferentes métodos de detección
 - **Análisis contextual**: Considera el origen, reputación y contexto de los archivos
@@ -54,7 +54,7 @@ Cada posible amenaza se evalúa a través de múltiples mecanismos antes de toma
 
 ### Clasificación Mejorada de Amenazas
 
-Ahora las amenazas se clasifican con mayor precisión:
+La clasificación propuesta considera tres dimensiones.
 
 - **Tipo de amenaza**: Categorización detallada (troyano, ransomware, adware, etc.)
 - **Nivel de riesgo**: Evaluación más precisa de la gravedad (crítico, alto, medio, bajo)
@@ -68,7 +68,7 @@ Ahora las amenazas se clasifican con mayor precisión:
 
 ## Gestión Avanzada de Patrones de Malware
 
-Nuestro nuevo sistema de gestión de patrones ofrece una protección más completa contra familias de malware:
+La gestión de patrones tiene como objetivo reconocer familias y variantes mediante las siguientes técnicas.
 
 ### Detección de Variantes
 
@@ -90,11 +90,11 @@ Nuestro nuevo sistema de gestión de patrones ofrece una protección más comple
 
 ## Beneficios para el Usuario
 
-Las mejoras implementadas se traducen en ventajas concretas para tu experiencia:
+Los beneficios enumerados son objetivos. Las metas relativas de eficacia y tiempo de análisis requieren comparar dos versiones sobre el mismo corpus y hardware, con la misma configuración y resultados publicados.
 
 ### Mayor Protección
 
-- **Detección mejorada**: Hasta un 30% más de eficacia contra amenazas avanzadas
+- **Detección mejorada**: Meta de mejora de hasta un 30 % de eficacia frente a la versión de referencia por definir
 - **Protección proactiva**: Identificación de amenazas antes de que puedan activarse
 - **Defensa contra amenazas sofisticadas**: Mayor capacidad contra ataques dirigidos
 
@@ -102,7 +102,7 @@ Las mejoras implementadas se traducen en ventajas concretas para tu experiencia:
 
 - **Análisis más eficiente**: Menor impacto en el rendimiento del sistema
 - **Optimización inteligente**: Ajuste automático según la actividad del usuario
-- **Análisis más rápidos**: Tiempos de escaneo reducidos hasta en un 40%
+- **Análisis más rápidos**: Meta de reducción de hasta un 40 % del tiempo de escaneo frente a esa referencia
 
 ### Experiencia de Usuario Mejorada
 
@@ -112,7 +112,7 @@ Las mejoras implementadas se traducen en ventajas concretas para tu experiencia:
 
 ## Configuración Recomendada
 
-Para aprovechar al máximo las nuevas capacidades de detección, recomendamos:
+Los perfiles, controles de nube y prioridades de actualización siguientes describen la configuración prevista. Su disponibilidad en una instalación requiere una prueba del flujo completo en Windows 11.
 
 ### Configuración General
 
@@ -122,7 +122,7 @@ Para aprovechar al máximo las nuevas capacidades de detección, recomendamos:
 
 ### Ajustes de Detección
 
-Puedes personalizar la sensibilidad de detección según tus necesidades:
+El diseño contempla tres perfiles de sensibilidad.
 
 - **Equilibrado** (por defecto): Buen balance entre detección y rendimiento
 - **Máxima seguridad**: Mayor sensibilidad, ideal para equipos con información sensible
@@ -138,33 +138,27 @@ Puedes personalizar la sensibilidad de detección según tus necesidades:
 
 ### ¿Las nuevas tecnologías de detección ralentizarán mi equipo?
 
-No. A pesar de ser más avanzadas, las nuevas tecnologías de detección han sido diseñadas para tener un impacto mínimo en el rendimiento. De hecho, en muchos casos, el rendimiento mejora gracias a algoritmos más eficientes y técnicas de optimización.
+El impacto depende del número y tamaño de los archivos, las reglas, el almacenamiento y la actividad del equipo. Los objetivos de latencia y uso de recursos están pendientes de medición en Windows 11. [Objetivos de evaluación](./detection-system.md#evaluación-y-benchmarks)
 
 ### ¿Cómo puedo saber si las nuevas capacidades están funcionando?
 
-En el panel principal de Amaru verás el estado actualizado de la protección. También puedes ver estadísticas de detección en "Informes" > "Estadísticas de protección", donde encontrarás información sobre amenazas bloqueadas por los nuevos algoritmos.
+La prueba del corpus permite comprobar las reglas distribuidas de manera reproducible. El indicador del panel espera una respuesta del servicio. La vista de informes y la atribución de detecciones a los nuevos algoritmos necesitan validación de extremo a extremo. [Prueba del corpus](../technical/eicar-corpus.md)
 
 ### ¿Necesito hacer algo para activar estas mejoras?
 
-No, las mejoras se implementan automáticamente con las actualizaciones regulares. Solo debes asegurarte de que tu Amaru Antivirus esté actualizado a la última versión y que las actualizaciones automáticas estén activadas.
+Consulta las capacidades verificadas para tu revisión del código. El despliegue automático de mejoras y la recarga de reglas en un servicio instalado están pendientes de validación. [Estado de desarrollo](../../status_development.md)
 
 ### ¿Estas mejoras funcionan en todos los sistemas operativos?
 
-Sí, las mejoras están disponibles para todas las plataformas soportadas (Windows, macOS, Linux). Algunas funciones específicas pueden variar según el sistema operativo debido a diferencias técnicas.
+La aplicación tiene como plataforma objetivo Windows 11 de 64 bits. Hay pruebas de componentes en Linux. La compatibilidad de la aplicación completa con macOS o Linux requiere trabajo y validación adicionales.
 
 ### ¿Qué hago si sospecho que hay un falso positivo?
 
-Si crees que Amaru ha identificado incorrectamente un archivo legítimo como amenaza:
-
-1. Ve a la sección de "Cuarentena"
-2. Selecciona el archivo en cuestión
-3. Haz clic en "Reportar falso positivo"
-
-Esto enviará información anónima a nuestros laboratorios para mejorar la precisión de detección.
+Anota la versión de Amaru, el nombre de la regla y el comportamiento esperado. Usa el canal de incidencias del proyecto. El envío anónimo desde cuarentena figura como función prevista. [Contacto](../support/contact.md)
 
 ### ¿Estas mejoras protegen contra las últimas variantes de ransomware?
 
-Sí, una de las principales mejoras es la detección avanzada de ransomware. El sistema ahora puede identificar comportamientos de cifrado malicioso en etapas tempranas, antes de que el ransomware pueda cifrar tus archivos importantes.
+La detección temprana de comportamientos de cifrado es un objetivo del diseño. Su validación requiere pruebas específicas de detección y respuesta, además de la prueba de firmas con EICAR.
 
 ---
 

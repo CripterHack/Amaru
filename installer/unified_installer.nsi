@@ -30,8 +30,7 @@ Unicode true
 ; Configuración del instalador
 Name "${PRODUCT_NAME}"
 OutFile "${OUTDIR}\AmaruAV-Setup.exe"
-InstallDir "$PROGRAMFILES\${PRODUCT_NAME}"
-InstallDirRegKey HKLM "${PRODUCT_DIR_REGKEY}" ""
+InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 RequestExecutionLevel admin
 
 ; Información del producto
@@ -45,11 +44,55 @@ VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
 
 ; Variables
 Var PreviousInstallDir
-Var PreviousIsX86
+Var Previous32Dir
+
+; Older installers stored InstallLocation with quotes. Treat it only as data.
+Function ReadInstallLocation
+  ReadRegStr $0 HKLM "${PRODUCT_UNINST_KEY}" "InstallLocation"
+  StrCpy $1 $0 1
+  StrCpy $2 $0 1 -1
+  ${If} $1 == '"'
+  ${AndIf} $2 == '"'
+    StrCpy $0 $0 -1 1
+  ${EndIf}
+FunctionEnd
+
+Function SelectUpgradeLocation
+  SetRegView 32
+  Call ReadInstallLocation
+  StrCpy $Previous32Dir $0
+  SetRegView 64
+  Call ReadInstallLocation
+  StrCpy $PreviousInstallDir $0
+  ${If} $PreviousInstallDir == ""
+    StrCpy $PreviousInstallDir $Previous32Dir
+  ${ElseIf} $Previous32Dir != ""
+  ${AndIf} $Previous32Dir != $PreviousInstallDir
+    MessageBox MB_OK|MB_ICONSTOP "Se encontraron dos instalaciones registradas en carpetas diferentes. Revise ambas antes de actualizar." /SD IDOK
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
+
+  ; Use the known Program Files location for a standard legacy installation.
+  ; Custom locations must be selected on the directory page or supplied via /D.
+  ${If} $PreviousInstallDir == "$PROGRAMFILES32\${PRODUCT_NAME}"
+    StrCpy $INSTDIR "$PROGRAMFILES32\${PRODUCT_NAME}"
+  ${EndIf}
+FunctionEnd
+
+Function CheckUpgradeLocation
+  ${If} $PreviousInstallDir != ""
+  ${AndIf} $PreviousInstallDir != $INSTDIR
+    MessageBox MB_OK|MB_ICONSTOP "Para actualizar la instalación existente, seleccione su misma carpeta. En modo silencioso, indique la carpeta con /D." /SD IDOK
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
+FunctionEnd
 
 ; Configuración de la interfaz
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\amaru.exe"
+!define MUI_FINISHPAGE_RUN_NOTCHECKED
 !define MUI_FINISHPAGE_RUN_TEXT "Iniciar Amaru Antivirus ahora"
 
 ; Usar iconos personalizados si están disponibles
@@ -87,124 +130,48 @@ Function .onInit
     Abort
   ${EndIf}
 
-  ; Buscar instalaciones previas en diferentes ubicaciones
-  
-  ; Primero en la ruta estándar de 64 bits
-  ReadRegStr $PreviousInstallDir HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation"
-  ${If} $PreviousInstallDir != ""
-    StrCpy $PreviousIsX86 "0"
-    ; Mostrar diálogo de desinstalación previa
-    MessageBox MB_YESNO|MB_ICONQUESTION "Se ha detectado una instalación previa de Amaru Antivirus en:$\n$PreviousInstallDir$\n$\n¿Desea desinstalarla antes de continuar?" IDYES uninstall_previous
-    Goto skip_uninstall
-    
-    uninstall_previous:
-      ; Cerrar cualquier instancia en ejecución
-      ExecWait 'taskkill /F /IM amaru.exe'
-      DetailPrint "Desinstalando versión previa..."
-      ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "UninstallString"
-      ${If} $0 != ""
-        ExecWait '"$0" /S _?=$PreviousInstallDir'
-        ; Esperar a que termine la desinstalación
-        Sleep 2000
-      ${EndIf}
-      
-      ; El desinstalador anterior es responsable de sus propios archivos.
-      RMDir "$PreviousInstallDir"
-      
-      ; Limpiar registros
-      DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
-      DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
-      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
-      
-    skip_uninstall:
-  ${EndIf}
-  
-  ; Luego en la ruta estándar de 32 bits
-  ReadRegStr $PreviousInstallDir HKLM "Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation"
-  ${If} $PreviousInstallDir != ""
-    StrCpy $PreviousIsX86 "1"
-    ; Mostrar diálogo de desinstalación previa
-    MessageBox MB_YESNO|MB_ICONQUESTION "Se ha detectado una instalación previa de Amaru Antivirus en:$\n$PreviousInstallDir$\n$\n¿Desea desinstalarla antes de continuar?" IDYES uninstall_previous_x86
-    Goto skip_uninstall_x86
-    
-    uninstall_previous_x86:
-      ; Cerrar cualquier instancia en ejecución
-      ExecWait 'taskkill /F /IM amaru.exe'
-      DetailPrint "Desinstalando versión previa (32 bits)..."
-      ReadRegStr $0 HKLM "Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "UninstallString"
-      ${If} $0 != ""
-        ExecWait '"$0" /S _?=$PreviousInstallDir'
-        ; Esperar a que termine la desinstalación
-        Sleep 2000
-      ${EndIf}
-      
-      ; El desinstalador anterior es responsable de sus propios archivos.
-      RMDir "$PreviousInstallDir"
-      
-      ; Limpiar registros
-      DeleteRegKey HKLM "Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
-      DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
-      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
-      
-    skip_uninstall_x86:
-  ${EndIf}
-  
-  ; También verificar instalaciones en el disco D
-  ${If} ${FileExists} "D:\Program Files\${PRODUCT_NAME}\uninstall.exe"
-    StrCpy $PreviousInstallDir "D:\Program Files\${PRODUCT_NAME}"
-    MessageBox MB_YESNO|MB_ICONQUESTION "Se ha detectado una instalación de Amaru Antivirus en disco D:$\n$PreviousInstallDir$\n$\n¿Desea desinstalarla antes de continuar?" IDYES uninstall_driveD
-    Goto skip_driveD
-    
-    uninstall_driveD:
-      ; Cerrar cualquier instancia en ejecución
-      ExecWait 'taskkill /F /IM amaru.exe'
-      DetailPrint "Desinstalando versión en disco D..."
-      ExecWait '"$PreviousInstallDir\uninstall.exe" /S _?=$PreviousInstallDir'
-      ; Esperar a que termine la desinstalación
-      Sleep 2000
-      
-      RMDir "$PreviousInstallDir"
-      
-    skip_driveD:
-  ${EndIf}
-  
-  ; Eliminar las entradas persistentes en el registro
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
-  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
-  
-  StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCT_NAME}"
+  Call SelectUpgradeLocation
 FunctionEnd
 
 ; Sección principal de instalación
 Section "Instalación" SEC_MAIN
+  Call CheckUpgradeLocation
   SetOutPath "$INSTDIR"
   File "${EXEDIR}\amaru.exe"
+  SetOverwrite off
   File "..\config.toml"
+  SetOverwrite on
   
   ; Crear estructura de directorios usando SetOutPath, que es más seguro
   SetOutPath "$INSTDIR\config"
-  SetOutPath "$INSTDIR\signatures"
-  File /r "..\signatures\*"
+  SetOutPath "$INSTDIR\signatures\official"
+  File /r "..\signatures\official\*"
+  SetOutPath "$INSTDIR\signatures\custom"
+  SetOverwrite off
+  File /r "..\signatures\custom\*"
+  SetOverwrite on
   SetOutPath "$INSTDIR\modules"
   SetOutPath "$INSTDIR\logs"
   SetOutPath "$INSTDIR\quarantine"
   
   ; Configuración de ambiente si es necesario
-  FileOpen $0 "$INSTDIR\.env" w
-  FileWrite $0 "# Configuración generada por el instalador$\r$\n"
-  FileWrite $0 "AMARU_ROOT=$INSTDIR$\r$\n"
-  FileWrite $0 "YARA_RULES_PATH=$INSTDIR\signatures$\r$\n"
-  FileWrite $0 "QUARANTINE_PATH=$INSTDIR\quarantine$\r$\n"
-  FileWrite $0 "LOGS_PATH=$INSTDIR\logs$\r$\n"
-  ${If} ${RunningX64}
-    FileWrite $0 "SYSTEM_ARCH=x64$\r$\n"
-  ${Else}
-    FileWrite $0 "SYSTEM_ARCH=x86$\r$\n"
+  ${IfNot} ${FileExists} "$INSTDIR\.env"
+    FileOpen $0 "$INSTDIR\.env" w
+    FileWrite $0 "# Configuración generada por el instalador$\r$\n"
+    FileWrite $0 "AMARU_ROOT=$INSTDIR$\r$\n"
+    FileWrite $0 "YARA_RULES_PATH=$INSTDIR\signatures$\r$\n"
+    FileWrite $0 "QUARANTINE_PATH=$INSTDIR\quarantine$\r$\n"
+    FileWrite $0 "LOGS_PATH=$INSTDIR\logs$\r$\n"
+    ${If} ${RunningX64}
+      FileWrite $0 "SYSTEM_ARCH=x64$\r$\n"
+    ${Else}
+      FileWrite $0 "SYSTEM_ARCH=x86$\r$\n"
+    ${EndIf}
+    FileWrite $0 "ENABLE_REALTIME_PROTECTION=true$\r$\n"
+    FileWrite $0 "ENABLE_HEURISTIC_ANALYSIS=true$\r$\n"
+    FileWrite $0 "LOW_RESOURCE_MODE=false$\r$\n"
+    FileClose $0
   ${EndIf}
-  FileWrite $0 "ENABLE_REALTIME_PROTECTION=true$\r$\n"
-  FileWrite $0 "ENABLE_HEURISTIC_ANALYSIS=true$\r$\n"
-  FileWrite $0 "LOW_RESOURCE_MODE=false$\r$\n"
-  FileClose $0
   
   ; Volver a la carpeta principal
   SetOutPath "$INSTDIR"
@@ -218,7 +185,7 @@ Section "Instalación" SEC_MAIN
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "Publisher" "${PUBLISHER}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayIcon" "$\"$INSTDIR\amaru.exe$\""
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation" "$\"$INSTDIR$\""
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoModify" "1"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoRepair" "1"
   
@@ -226,6 +193,14 @@ Section "Instalación" SEC_MAIN
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}" "$\"$INSTDIR\amaru.exe$\""
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}" "$\"$INSTDIR\amaru.exe$\""
   
+  ; Migrate registration only after writing its replacement in the native view.
+  ${If} $Previous32Dir != ""
+    SetRegView 32
+    DeleteRegKey HKLM "${PRODUCT_UNINST_KEY}"
+    DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
+    SetRegView 64
+  ${EndIf}
+
   ; Crear accesos directos
   CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
   CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\amaru.exe"
@@ -233,15 +208,11 @@ Section "Instalación" SEC_MAIN
   CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\amaru.exe"
 SectionEnd
 
-; Sección para iniciar la aplicación después de la instalación
-Section -Post
-  ExecShell "" "$INSTDIR\amaru.exe"
-SectionEnd
-
 ; Sección de desinstalación
 Section "Uninstall"
+  SetRegView 64
   ; Detener el proceso antes de desinstalar
-  ExecWait 'taskkill /F /IM amaru.exe'
+  ExecWait '"$SYSDIR\taskkill.exe" /F /IM amaru.exe'
   
   ; Eliminar accesos directos
   Delete "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk"
@@ -252,31 +223,27 @@ Section "Uninstall"
   ; Borrar archivos principales
   Delete "$INSTDIR\amaru.exe"
   Delete "$INSTDIR\uninstall.exe"
+  RMDir /r "$INSTDIR\modules"
+  RMDir /r "$INSTDIR\signatures\official"
+
+  ; Silent uninstall keeps recoverable user data. An interactive purge requires consent.
+  MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "¿Desea borrar también la cuarentena, los registros, la configuración y las firmas personalizadas?" /SD IDNO IDNO keep_data
   Delete "$INSTDIR\.env"
   Delete "$INSTDIR\config.toml"
-  
-  ; Borrar directorios de datos
   RMDir /r "$INSTDIR\config"
   RMDir /r "$INSTDIR\signatures"
-  RMDir /r "$INSTDIR\modules"
   RMDir /r "$INSTDIR\logs"
   RMDir /r "$INSTDIR\quarantine"
-  
-  ; Eliminar datos persistentes usando la variable de sistema adecuada
-  ${If} ${RunningX64}
-    SetShellVarContext all
-    RMDir /r "$APPDATA\${PRODUCT_NAME}"
-    SetShellVarContext current
-  ${Else}
-    RMDir /r "$APPDATA\${PRODUCT_NAME}"
-  ${EndIf}
-  
+  SetShellVarContext all
+  RMDir /r "$APPDATA\${PRODUCT_NAME}"
+  SetShellVarContext current
+  keep_data:
+
   ; Limpiar el directorio principal
   RMDir "$INSTDIR"
   
   ; Limpiar registros completamente
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
-  DeleteRegKey HKLM "Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
   DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
   
@@ -285,5 +252,5 @@ Section "Uninstall"
   DeleteRegKey HKLM "Software\${PRODUCT_NAME}"
   
   ; Mostrar mensaje de desinstalación completa
-  MessageBox MB_OK|MB_ICONINFORMATION "Amaru Antivirus ha sido completamente desinstalado del sistema."
+  MessageBox MB_OK|MB_ICONINFORMATION "Se ha desinstalado Amaru Antivirus." /SD IDOK
 SectionEnd 

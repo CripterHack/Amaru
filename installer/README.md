@@ -25,6 +25,14 @@ cargo build --locked --release --package amaru --bin amaru --target x86_64-pc-wi
 
 La verificación descarta el instalador temporal. Una compilación real del proyecto y una prueba de instalación, arranque, detección y desinstalación en Windows 11 siguen siendo necesarias para validar una versión distribuible.
 
+## Actualizaciones de desarrollo
+
+Una actualización instala los archivos de la aplicación en la carpeta existente y actualiza las firmas oficiales. Conserva los registros, la cuarentena, la configuración, el archivo `.env` y las reglas personalizadas. Cierra Amaru antes de reemplazar el ejecutable. La desinstalación silenciosa también conserva los datos del usuario. Para borrarlos durante una desinstalación interactiva, confirma la pregunta específica sobre la cuarentena y demás datos.
+
+El instalador consulta `InstallLocation` en las vistas de registro de 32 y 64 bits. Para una instalación en una ruta personalizada, selecciona esa misma carpeta o indícala explícitamente mediante `/D` en modo silencioso. Si ambas vistas apuntan a carpetas diferentes, la actualización termina con error antes de escribir archivos.
+
+Los dos nombres históricos de scripts NSIS usan la misma receta. Para la distribución final siguen pendientes el empaquetado de las dependencias de YARA, Radare2 y ClamAV, sus bases de firmas, el registro y las pruebas del servicio de Windows, la comprobación de integridad de los binarios instalados y la firma del instalador.
+
 ## Estructura
 
 - [scripts/package.ps1](../scripts/package.ps1) implementa la compilación y la verificación utilizadas por los puntos de entrada.

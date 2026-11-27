@@ -116,15 +116,15 @@ describe('Dashboard Component', () => {
     }
   });
 
-  test('opens the help route and finds the installation guide', async () => {
+  test('opens the help route and finds the system requirements', async () => {
     const { unmount } = render(App);
     try {
       const help = screen.getByRole('link', { name: 'Help' });
       await fireEvent.click(help);
       await screen.findByRole('heading', { name: 'Centro de Ayuda' });
       const search = screen.getByRole('searchbox', { name: 'Buscar en la ayuda' });
-      await fireEvent.input(search, { target: { value: 'Instalación' } });
-      const article = await screen.findByRole('link', { name: /Instalación y configuración inicial/ });
+      await fireEvent.input(search, { target: { value: 'Requisitos' } });
+      const article = await screen.findByRole('link', { name: /Requisitos del sistema/ });
       expect(article.getAttribute('href')).toContain('/docs/user-guides/getting-started.md');
     } finally {
       unmount();

@@ -56,6 +56,9 @@ pub enum AmaruError {
     #[error("Error de configuración: {0}")]
     Config(String),
     
+    #[error("Error de comunicación con el servicio: {0}")]
+    Ipc(#[from] ipc::IpcError),
+
     #[error("Error interno del sistema: {0}")]
     Internal(String),
     
@@ -88,6 +91,26 @@ pub struct ScanResult {
     
     /// Análisis de comportamiento
     pub behaviors: Option<Vec<MaliciousBehavior>>,
+}
+
+/// Estado del servicio
+#[derive(Debug, Clone)]
+pub struct ServiceState {
+    pub is_running: bool,
+    pub uptime: Duration,
+    pub files_monitored: usize,
+    pub threats_detected: usize,
+    pub scan_in_progress: bool,
+    pub scan_progress: Option<ScanProgress>,
+    pub last_update: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScanProgress {
+    pub files_scanned: usize,
+    pub files_total: usize,
+    pub current_file: PathBuf,
+    pub start_time: chrono::DateTime<chrono::Utc>,
 }
 
 /// Estructura principal del antivirus Amaru
@@ -805,29 +828,9 @@ impl Amaru {
         ipc::IpcClient::connect()
     }
     
-    /// Estado del servicio
-    #[derive(Debug, Clone)]
-    pub struct ServiceState {
-        pub is_running: bool,
-        pub uptime: Duration,
-        pub files_monitored: usize,
-        pub threats_detected: usize,
-        pub scan_in_progress: bool,
-        pub scan_progress: Option<ScanProgress>,
-        pub last_update: chrono::DateTime<chrono::Utc>,
-    }
-    
-    #[derive(Debug, Clone)]
-    pub struct ScanProgress {
-        pub files_scanned: usize,
-        pub files_total: usize,
-        pub current_file: PathBuf,
-        pub start_time: chrono::DateTime<chrono::Utc>,
-    }
-    
     /// Obtiene el estado actual del servicio
     pub async fn get_service_state() -> Result<ServiceState, AmaruError> {
-        let client = Self::create_ipc_client()
+        let mut client = Self::create_ipc_client()
             .map_err(|e| AmaruError::Internal(e.to_string()))?;
             
         match client.get_status()? {

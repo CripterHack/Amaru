@@ -21,7 +21,7 @@ Analogy: Coils around and neutralizes threats.
 Amaru is a community-driven fork of ClamWin, supercharged with modern malware detection capabilities:
 - **Real-time protection** via Rust-native file monitoring
 - **Heuristic analysis** using YARA rules and Radare2 static analysis
-- **Low resource consumption** thanks to Rust-optimized modules
+- **Low resource consumption** is a design goal. Windows 11 performance measurements are pending.
 - **Modern UI** built with Tauri + Svelte + TailwindCSS
 
 Designed for users who value transparency, customization, and Windows 11 compatibility.
@@ -34,7 +34,7 @@ These features define the Windows 11 product scope. Implementation and validatio
 
 | **Feature**               | **Technology**          | **Description**                                      |
 |--------------------------|-------------------------|---------------------------------------------------|
-| Real-Time File Monitoring | `notify-rs` + ClamAV    | Watches file changes and scans instantly            |
+| Real-Time File Monitoring | `notify-rs` + ClamAV    | Routes file change events to the scanner            |
 | YARA Rule Engine         | YARA 4.3+              | Detects malware patterns with custom/signed rules   |
 | Static Analysis          | Radare2                | Examines PE headers, sections, and suspicious strings|
 | Low-Level Performance    | Rust                   | Memory-safe modules for scanning and hooks          |
@@ -129,7 +129,7 @@ The intended desktop workflow on Windows 11 has three steps.
 3. Schedule scans and configure protection settings through the Settings page.
 
 ### Command Line Interface
-The CLI declares the following interfaces for scanning and service management. Dispatch from the application entry point is pending. These examples document the intended syntax. See [src/main.rs](src/main.rs).
+The CLI routes the EICAR self-test and Windows service management commands. General scan, analysis and update dispatch are pending. These examples document the intended syntax. See [src/main.rs](src/main.rs).
 
 ```powershell
 # Scan a specific file
@@ -153,7 +153,7 @@ amaru service --action status
 
 The bundled rules are in [signatures/official](signatures/official) and [signatures/custom](signatures/custom). For an on-demand scan with the optional YARA-X tool, see the [command, output and exit codes](docs/technical/yara-x.md).
 
-The planned `amaru test-eicar` command still needs CLI integration. The existing [EICAR example](examples/eicar_detection.rs) and [corpus specification](docs/technical/eicar-corpus.md) describe the detection checks.
+The `amaru test-eicar` command loads the configured rules and checks the EICAR signature and a clean control. Acceptance on a packaged Windows build is pending. See the [EICAR corpus specification](docs/technical/eicar-corpus.md).
 
 ### Windows Service
 The service interface specifies the following administrator commands. Installation, startup and status reporting still require end-to-end verification on Windows 11.
