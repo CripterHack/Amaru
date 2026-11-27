@@ -151,6 +151,8 @@ amaru analyze --file C:\suspicious\file.exe --radare2 --heuristic
 amaru service --action status
 ```
 
+The bundled rules are in [signatures/official](signatures/official) and [signatures/custom](signatures/custom). For an on-demand scan with the optional YARA-X tool, see the [command, output and exit codes](docs/technical/yara-x.md).
+
 The planned `amaru test-eicar` command still needs CLI integration. The existing [EICAR example](examples/eicar_detection.rs) and [corpus specification](docs/technical/eicar-corpus.md) describe the detection checks.
 
 ### Windows Service
