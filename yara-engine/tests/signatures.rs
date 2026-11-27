@@ -7,6 +7,7 @@ use yara_engine::{YaraEngine, YaraError};
 fn bundled_rules_detect_eicar_on_disk_and_in_memory() -> Result<(), YaraError> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let engine = YaraEngine::new(root.join("signatures"))?;
+    engine.verify_eicar()?;
     let fixture = root.join("test-eicar.txt");
     let on_disk = engine.scan_file(&fixture)?;
     let in_memory = engine.scan_memory(&fs::read(fixture)?)?;
@@ -41,5 +42,19 @@ fn reload_preserves_last_working_rules_and_drops_removed_rules() -> Result<(), Y
     engine.reload_rules()?;
     assert!(engine.scan_memory(b"sample")?.is_empty());
     assert!(engine.get_rule_metadata().is_empty());
+    Ok(())
+}
+
+#[test]
+fn eicar_self_test_rejects_missing_and_unconditional_rules() -> Result<(), YaraError> {
+    let directory = tempdir()?;
+    let mut engine = YaraEngine::new(directory.path())?;
+    assert!(engine.verify_eicar().is_err());
+    fs::write(
+        directory.path().join("eicar.yar"),
+        "rule EICAR_Test_File { condition: true }",
+    )?;
+    engine.reload_rules()?;
+    assert!(engine.verify_eicar().is_err());
     Ok(())
 }

@@ -257,6 +257,24 @@ impl YaraEngine {
         Ok(self.collect_matches(matches))
     }
 
+    /// Check the installed EICAR signature against a canonical sample and a clean control.
+    pub fn verify_eicar(&self) -> Result<(), YaraError> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        // Store the diagnostic fixture in a form that does not embed its raw signature in the binary.
+        let sample = STANDARD.decode("WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=")
+            .map_err(|error| YaraError::ScanError(error.to_string()))?;
+        for (bytes, expected) in [(sample.as_slice(), true), (&b"Amaru control"[..], false)] {
+            let detected = self.scan_memory(bytes)?.iter().any(|rule| rule.rule_name == "EICAR_Test_File");
+            if detected != expected {
+                return Err(YaraError::ScanError(format!(
+                    "EICAR_Test_File returned {detected}, expected {expected} with rules at {}",
+                    self.rules_dir.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn scan_directory(&self, dir: impl AsRef<Path>) -> Result<Vec<ScanResult>, YaraError> {
         let dir = dir.as_ref();
         let start = std::time::Instant::now();

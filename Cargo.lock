@@ -3051,6 +3051,7 @@ dependencies = [
 name = "yara-engine"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "dashmap",
  "env_logger",
