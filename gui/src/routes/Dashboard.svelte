@@ -17,7 +17,7 @@
   import { notify } from '../lib/components/Notifications.svelte';
   
   // Props
-  export let protectionStatus: ProtectionStatus;
+  export let protectionStatus: ProtectionStatus | null;
   
   // State
   let statistics: ThreatStatistics | null = null;
@@ -448,9 +448,13 @@
           <h2 class="text-xl font-semibold">Protection Status</h2>
           <p class="text-gray-500 dark:text-gray-400 text-sm mt-1">Your system protection overview</p>
         </div>
-        <span class={`px-3 py-1 rounded-full text-sm font-medium ${systemStatus.realtime_protection ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'}`}>
-          {systemStatus.realtime_protection ? 'Protected' : 'At Risk'}
-        </span>
+        {#if protectionStatus === null}
+          <span class="text-sm text-gray-500">Protection status unavailable</span>
+        {:else}
+          <span class={`px-3 py-1 rounded-full text-sm font-medium ${systemStatus.realtime_protection ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'}`}>
+            {systemStatus.realtime_protection ? 'Protected' : 'At Risk'}
+          </span>
+        {/if}
       </div>
       
       <div class="mt-4">
@@ -585,6 +589,7 @@
               <input 
                 type="checkbox" 
                 class="sr-only peer" 
+                aria-label={feature.name}
                 checked={feature.enabled} 
                 on:change={() => toggleFeature(feature.id)}
               >
@@ -603,7 +608,7 @@
       <h2 class="text-xl font-semibold mb-4">Recent Threats</h2>
       
       {#if loading}
-        <div class="flex justify-center items-center py-8">
+        <div role="status" aria-label="Loading recent threats" class="flex justify-center items-center py-8">
           <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
         </div>
       {:else if recentThreats.length === 0}

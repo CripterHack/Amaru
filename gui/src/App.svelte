@@ -3,6 +3,7 @@
   import { writable, type Writable } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/tauri';
   import { listen } from '@tauri-apps/api/event';
+  import type { ProtectionStatus } from './lib/stores/statusStore';
   import { theme } from './lib/stores/theme';
   import { notify } from './lib/components/Notifications.svelte';
   
@@ -22,14 +23,9 @@
   // State
   let route: Writable<string> = writable('dashboard');
   let scanning = false;
-  let protectionStatus = writable({
-    enabled: true,
-    version: '1.0.0',
-    monitored_paths: ['/home', '/usr', '/etc'],
-    last_updated: new Date().toISOString(),
-    scanning_enabled: false
-  });
-  
+  const protectionStatus = writable<ProtectionStatus | null>(null);
+  let togglingProtection = false;
+
   // Event listeners
   async function setupListeners() {
     // Listen for threat detection events
@@ -70,14 +66,18 @@
     });
     
     // Listen for protection status changes
-    await listen('protection-status-changed', (event) => {
-      const payload = event.payload as any;
-      protectionStatus.update(status => ({
-        ...status,
-        enabled: payload.enabled,
-        monitored_paths: payload.monitoredPaths
-      }));
-      
+    await listen<{ enabled: boolean; monitoredPaths: string[] }>('protection-status-changed', (event) => {
+      const payload = event.payload;
+      if ($protectionStatus) {
+        $protectionStatus = {
+          ...$protectionStatus,
+          enabled: payload.enabled,
+          monitored_paths: payload.monitoredPaths
+        };
+      } else {
+        void loadProtectionStatus();
+      }
+
       notify(
         'Protection Status', 
         `Protection ${payload.enabled ? 'enabled' : 'disabled'}`, 
@@ -100,13 +100,7 @@
   async function loadProtectionStatus() {
     try {
       // Get protection status from Tauri backend
-      const status = await invoke('get_protection_status') as {
-        enabled: boolean;
-        version: string;
-        monitored_paths: string[];
-        last_updated: string;
-        scanning_enabled: boolean;
-      };
+      const status = await invoke<ProtectionStatus>('get_protection_status');
       protectionStatus.set(status);
     } catch (error) {
       console.error('Failed to get protection status:', error);
@@ -120,32 +114,21 @@
   
   // Toggle protection
   async function toggleProtection() {
-    // Update UI immediately for responsiveness
-    let newEnabledStatus = false;
-    protectionStatus.update(status => {
-      newEnabledStatus = !status.enabled;
-      return {
-        ...status,
-        enabled: newEnabledStatus
-      };
-    });
-    
-    // Call backend to actually toggle protection
+    if (!$protectionStatus || togglingProtection) return;
+    const enable = !$protectionStatus.enabled;
+    togglingProtection = true;
     try {
-      await invoke('toggle_protection', { enable: newEnabledStatus });
+      await invoke('toggle_protection', { enable });
+      $protectionStatus = { ...$protectionStatus, enabled: enable };
     } catch (error) {
-      // Revert UI state if backend call fails
-      protectionStatus.update(status => ({
-        ...status,
-        enabled: !newEnabledStatus
-      }));
-      
       console.error('Failed to toggle protection:', error);
       notify(
         'Error', 
         `Failed to toggle protection: ${error}`, 
         'error'
       );
+    } finally {
+      togglingProtection = false;
     }
   }
   
@@ -218,6 +201,7 @@
       route={$route} 
       navigate={navigate} 
       protectionStatus={$protectionStatus} 
+      {togglingProtection}
       on:toggleProtection={toggleProtection}
     />
     

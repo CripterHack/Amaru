@@ -149,8 +149,8 @@
 			<div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6 mb-8">
 				<h2 class="text-xl font-semibold mb-4">Scan Options</h2>
 				
-				<div class="mb-4">
-					<label class="block mb-2 font-medium">Scan Items</label>
+				<fieldset class="mb-4">
+					<legend class="block mb-2 font-medium">Scan Items</legend>
 					
 					<div class="flex items-center mb-2">
 						<input
@@ -191,7 +191,7 @@
 						/>
 						<label for="scanNetwork" class="ml-2">Scan network drives</label>
 					</div>
-				</div>
+				</fieldset>
 				
 				<div class="mb-4">
 					<label for="heuristicLevel" class="block mb-2 font-medium">Heuristic Level</label>

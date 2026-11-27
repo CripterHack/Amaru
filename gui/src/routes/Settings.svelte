@@ -264,9 +264,9 @@
     </div>
     <div class="p-4 space-y-4">
       <div>
-        <label class="block font-medium mb-2">Scan Depth</label>
+        <label for="scanDepth" class="block font-medium mb-2">Scan Depth</label>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">How deep to scan into directories and archives</p>
-        <select 
+        <select id="scanDepth"
           bind:value={settings.scanning.scanDepth}
           class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
         >
@@ -277,9 +277,9 @@
       </div>
       
       <div>
-        <label class="block font-medium mb-2">Heuristic Level</label>
+        <label for="heuristicLevel" class="block font-medium mb-2">Heuristic Level</label>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">Detects unknown threats based on behavior</p>
-        <select 
+        <select id="heuristicLevel"
           bind:value={settings.scanning.heuristicLevel}
           class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
         >
@@ -331,9 +331,9 @@
       </div>
       
       <div>
-        <label class="block font-medium mb-2">Update Frequency</label>
+        <label for="updateFrequency" class="block font-medium mb-2">Update Frequency</label>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">How often to check for updates</p>
-        <select 
+        <select id="updateFrequency"
           bind:value={settings.updates.updateFrequency}
           class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
         >
@@ -415,9 +415,9 @@
     </div>
     <div class="p-4 space-y-4">
       <div>
-        <label class="block font-medium mb-2">Log Level</label>
+        <label for="logLevel" class="block font-medium mb-2">Log Level</label>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">Amount of detail to include in logs</p>
-        <select 
+        <select id="logLevel"
           bind:value={settings.advanced.logLevel}
           class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
         >
@@ -429,9 +429,9 @@
       </div>
       
       <div>
-        <label class="block font-medium mb-2">Max Log Size (MB)</label>
+        <label for="maxLogSize" class="block font-medium mb-2">Max Log Size (MB)</label>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">Maximum size for log files before rotation</p>
-        <input 
+        <input id="maxLogSize"
           type="number" 
           bind:value={settings.advanced.maxLogSize}
           min="10" 
@@ -441,9 +441,9 @@
       </div>
       
       <div>
-        <label class="block font-medium mb-2">Quarantine Location</label>
+        <label for="quarantineLocation" class="block font-medium mb-2">Quarantine Location</label>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">Custom location for quarantined files (leave empty for default)</p>
-        <input 
+        <input id="quarantineLocation"
           type="text" 
           bind:value={settings.advanced.quarantineLocation}
           placeholder="C:\Path\To\Quarantine" 
