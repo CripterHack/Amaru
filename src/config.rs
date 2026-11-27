@@ -40,6 +40,10 @@ pub struct Config {
     
     /// Configuración de rendimiento
     pub performance_config: PerformanceConfig,
+
+    /// Tablas de otros componentes que deben conservarse al guardar el archivo compartido.
+    #[serde(flatten)]
+    pub component_settings: toml::Table,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,6 +277,7 @@ impl Default for Config {
             update_config: UpdateConfig::default(),
             ui_config: UiConfig::default(),
             performance_config: PerformanceConfig::default(),
+            component_settings: toml::Table::new(),
         }
     }
 }
@@ -416,8 +421,13 @@ mod tests {
     }
 
     #[test]
-    fn shipped_config_loads() {
+    fn shipped_config_loads_and_preserves_component_settings() {
+        let shipped: toml::Table = toml::from_str(include_str!("../config.toml")).unwrap();
         let config: Config = toml::from_str(include_str!("../config.toml")).unwrap();
+        let saved: toml::Table = toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        for key in ["behavior_analyzer", "performance"] {
+            assert_eq!(saved[key], shipped[key]);
+        }
         assert_eq!(config.yara_rules_path, PathBuf::from("signatures"));
         assert!(config.scan_config.max_file_size > 0);
     }

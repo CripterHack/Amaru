@@ -59,7 +59,7 @@ These features define the Windows 11 product scope. Implementation and validatio
 - Admin privileges
 
 ### Developer Requirements
-- Rust MSVC toolchain with support for Cargo lockfile format 4
+- Rust MSVC toolchain 1.89 or later (the secure logger uses standard-library file locking)
 - Node.js 18 or later (for UI development)
 - Visual Studio Build Tools with C++ workload
 - Git for Windows

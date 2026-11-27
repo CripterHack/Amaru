@@ -80,7 +80,7 @@ pub struct SecureLogEntry {
 }
 
 /// Estructura para configurar el logger seguro
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SecureLoggerConfig {
     /// Ruta base para los archivos de log
     pub log_dir: PathBuf,
@@ -102,6 +102,20 @@ pub struct SecureLoggerConfig {
 
     /// Si se debe usar formato JSON para los logs
     pub use_json_format: bool,
+}
+
+impl std::fmt::Debug for SecureLoggerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecureLoggerConfig")
+            .field("log_dir", &self.log_dir)
+            .field("max_log_size", &self.max_log_size)
+            .field("max_log_files", &self.max_log_files)
+            .field("min_log_level", &self.min_log_level)
+            .field("hmac_key", &"[redacted]")
+            .field("encrypt_sensitive", &self.encrypt_sensitive)
+            .field("use_json_format", &self.use_json_format)
+            .finish()
+    }
 }
 
 impl Default for SecureLoggerConfig {
@@ -662,10 +676,13 @@ impl SecureLogger {
             .collect())
     }
 
+    /// Exportación legible con ubicación y sensibilidad, incluidos los mensajes descifrados.
     pub async fn export_to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), SecureLoggingError> {
         self.export(path.as_ref(), ExportFormat::Csv, true)
     }
 
+    /// Exportación legible: el mensaje, el módulo y la ubicación se descifran tras
+    /// verificar el archivo. Para conservar la prueba HMAC, archivar el original.
     pub async fn export_logs(
         &self,
         path: &Path,

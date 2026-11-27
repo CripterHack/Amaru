@@ -32,9 +32,7 @@ use crate::{
     resource_manager::{ResourceManager, TaskType, SystemPriority}
 };
 
-const SERVICE_NAME: &str = "AmaruAntivirus";
-const SERVICE_DISPLAY_NAME: &str = "Amaru Antivirus Real-time Protection";
-const SERVICE_DESCRIPTION: &str = "Provides real-time protection against malware and suspicious activity";
+use scm::SERVICE_NAME;
 const PIPE_NAME: &str = r"\\.\pipe\amaru-service";
 
 /// Código de salida personalizado para el servicio cuando ocurre un error
@@ -221,86 +219,8 @@ fn handle_command(command: IpcCommand) -> IpcResponse {
     }
 }
 
-pub fn install_service() -> windows_service::Result<()> {
-    use windows_service::{
-        service::{ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType},
-        service_manager::{ServiceManager, ServiceManagerAccess},
-    };
-
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CREATE_SERVICE)?;
-
-    let service_binary_path = std::env::current_exe()
-        .unwrap()
-        .with_file_name("amaru-service.exe");
-
-    let service_info = ServiceInfo {
-        name: OsString::from(SERVICE_NAME),
-        display_name: OsString::from(SERVICE_DISPLAY_NAME),
-        service_type: ServiceType::OWN_PROCESS,
-        start_type: ServiceStartType::AutoStart,
-        error_control: ServiceErrorControl::Normal,
-        executable_path: service_binary_path,
-        launch_arguments: vec![],
-        dependencies: vec![],
-        account_name: None,
-        account_password: None,
-    };
-
-    let service = manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
-    service.set_description(SERVICE_DESCRIPTION)?;
-
-    Ok(())
-}
-
-pub fn uninstall_service() -> windows_service::Result<()> {
-    use windows_service::{
-        service::ServiceAccess,
-        service_manager::{ServiceManager, ServiceManagerAccess},
-    };
-
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    let service = manager.open_service(SERVICE_NAME, ServiceAccess::DELETE)?;
-    service.delete()?;
-
-    Ok(())
-}
-
-pub fn start_service() -> windows_service::Result<()> {
-    use windows_service::{
-        service::ServiceAccess,
-        service_manager::{ServiceManager, ServiceManagerAccess},
-    };
-
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    let service = manager.open_service(SERVICE_NAME, ServiceAccess::START)?;
-    service.start(&[])?;
-
-    Ok(())
-}
-
-pub fn stop_service() -> windows_service::Result<()> {
-    use windows_service::{
-        service::ServiceAccess,
-        service_manager::{ServiceManager, ServiceManagerAccess},
-    };
-
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    let service = manager.open_service(SERVICE_NAME, ServiceAccess::STOP)?;
-    service.stop()?;
-
-    Ok(())
-}
-
-pub fn get_service_status() -> windows_service::Result<ServiceStatus> {
-    use windows_service::{
-        service::ServiceAccess,
-        service_manager::{ServiceManager, ServiceManagerAccess},
-    };
-
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    let service = manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS)?;
-    service.query_status()
-}
+mod scm;
+pub use scm::{get_service_status, install_service, restart_service, set_autostart, start_service, stop_service, uninstall_service};
 
 /// Gestiona el servicio de Windows para protección en tiempo real
 pub struct AmaruService {

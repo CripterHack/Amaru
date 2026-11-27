@@ -113,22 +113,25 @@ async fn failed_later_download_or_verification_preserves_all_live_files() {
 
     let mut invalid_signature = package.clone();
     invalid_signature.signatures[1].signature = key.sign(OLD).to_bytes().to_vec();
-    assert!(matches!(
-        updater.apply_update(invalid_signature).await,
-        Err(UpdateError::Signature(_))
-    ));
+    let result = updater.apply_update(invalid_signature).await;
+    assert!(
+        matches!(result, Err(UpdateError::Signature(_))),
+        "{result:?}"
+    );
     let mut invalid_hash = package.clone();
     invalid_hash.rules[1].hash = hex::encode(Sha256::digest(OLD));
-    assert!(matches!(
-        updater.apply_update(invalid_hash).await,
-        Err(UpdateError::Signature(_))
-    ));
+    let result = updater.apply_update(invalid_hash).await;
+    assert!(
+        matches!(result, Err(UpdateError::Signature(_))),
+        "{result:?}"
+    );
     let mut absent = package;
     absent.rules[1].url = format!("{base}/missing");
-    assert!(matches!(
-        updater.apply_update(absent).await,
-        Err(UpdateError::Network(_))
-    ));
+    let result = updater.apply_update(absent).await;
+    assert!(
+        matches!(&result, Err(UpdateError::Network(error)) if error.status() == Some(reqwest::StatusCode::NOT_FOUND)),
+        "{result:?}"
+    );
 
     assert_eq!(
         fs::read(root.path().join("rules/official/test.yar")).unwrap(),

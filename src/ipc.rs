@@ -102,18 +102,20 @@ impl IpcClient {
     }
     
     pub fn connect_with_timeout(timeout: Duration) -> Result<Self, IpcError> {
-        let client = PipeClient::connect(PIPE_NAME)?;
+        // 0 and u32::MAX are special wait values in the Win32 pipe API.
+        let millis = timeout.as_millis().clamp(1, u128::from(u32::MAX - 1)) as u32;
+        let mut client = PipeClient::connect_ms(PIPE_NAME, millis)?;
         
         // Configurar timeout para operaciones de lectura/escritura
-        client.set_read_timeout(Some(timeout))?;
-        client.set_write_timeout(Some(timeout))?;
+        client.set_read_timeout(Some(timeout));
+        client.set_write_timeout(Some(timeout));
         
         Ok(Self { client, timeout })
     }
     
     pub fn set_timeout(&mut self, timeout: Duration) -> Result<(), IpcError> {
-        self.client.set_read_timeout(Some(timeout))?;
-        self.client.set_write_timeout(Some(timeout))?;
+        self.client.set_read_timeout(Some(timeout));
+        self.client.set_write_timeout(Some(timeout));
         self.timeout = timeout;
         Ok(())
     }

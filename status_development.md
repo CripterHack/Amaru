@@ -1,4 +1,38 @@
-# Amaru Development Status Report
+# Amaru development status
+
+## Validation record for 2026-11-27
+
+The Windows 11 application remains experimental. The starting revision was `850ec7e` (2025-04-01). The checks below cover the changes in [PR #4](https://github.com/CripterHack/Amaru/pull/4). The historical module assessments follow this record.
+
+| Area | What was verified | Remaining work |
+|---|---|---|
+| Shipped signatures | Classic YARA and YARA-X compiled 24 rules from nine files. Both matched all 651 selected NDAAL inputs and rejected the three negative controls. | Archive extraction, detection rates on representative samples and false-positive rates on legitimate software. |
+| Native YARA engine | Loaded the shipped rule tree, detected EICAR in a file and in memory, retained working rules after an invalid reload and dropped removed rules. | Exercise the engine through the installed service. Five bundled rules use the same sample marker; family-specific detection needs separate evidence. |
+| Real-time monitor | File notifications, extension filters, rename handling, dynamic watch paths and restart are covered by native component tests. | Exercise Windows service startup, stop, permissions and quarantine together. |
+| Radare2 | Ten tests passed with each of Radare2 5.8.8 and 6.2.6 on Linux, including analysis of a benign Windows executable. | Reconcile the analyzer API with its Windows application callers. |
+| Rule updater | Six tests cover package signing, download verification, successful installation and rejection without changing installed rules. File bytes use Ed25519 signatures; metadata is retrieved over HTTPS. | Exercise a deployed update endpoint, configured trust key and service reload on Windows. |
+| Svelte frontend | Clean npm installation with Node 22, full type check, eight component tests and Vite production build. The protection indicator waits for a backend response. | Exercise these flows against the native Tauri backend. Production dependency audit identified two moderate findings in the Svelte 4 dependency chain. |
+| Documentation | CI checks repository Markdown links and heading anchors. The technical index links the specifications, available guides and pending technical coverage. | Verify external service availability and benchmark claims separately. |
+| Installer | PowerShell/NSIS checks on Linux rejected missing, empty and PE32 input and a failed Cargo build. A benign x64 test executable exercised NSIS packaging. | Build the current application on Windows x64, then install, upgrade and uninstall it on Windows 11. |
+
+### Reproducing the results
+
+The [component workflow](.github/workflows/validation.yml) lists the commands and dependency versions. The [Windows application workflow](.github/workflows/windows-build.yml) checks the full Cargo application before invoking the packaging script. Status for each revision is recorded in the pull request checks. The [EICAR corpus specification](docs/technical/eicar-corpus.md) and [YARA-X specification](docs/technical/yara-x.md) define the expected results for issues #3 and #2. The [Radare2 component guide](radare2-analyzer/README.md) describes its native input and output.
+
+### Integration findings
+
+The service controller, CLI parser, EICAR self-test, TOML configuration and secure logger have component-level checks. The native controller has been cross-checked for Windows. Installing and starting the service on Windows 11 still requires a working application build. The secure logger retains verification of historical signed JSON with the original key; historical unsigned text cannot be retroactively authenticated.
+
+The core, Tauri and service currently expect different scan result shapes. The analyzer returns evidence for one file. The desktop history also needs a session identifier, counts, actions and timing. The root tests disagree about the risk label for a clean file (`Low` and `Safe`). The integrated service and monitor also use different criteria for automatic quarantine. Integration must keep skipped files, failed scans and verified clean files distinct, and record an action only after it succeeds.
+
+### Release criteria
+
+A Windows release requires a build of the core and desktop frontend from the same revision, a service that reports its actual protection state, a successful EICAR detection and quarantine/restore check through the installed application, and an installation and upgrade that preserve user data. Record the Windows 11 version, build revision and installer checksum with these results. GitHub had no published release at the time of this review.
+
+## Historical assessment from April 2025
+
+The following section preserves the original design, module assessments and roadmap. Its completion labels reflect the assessment recorded in 2025. Use the dated validation record above for current test evidence.
+
 
 ## Project Overview
 Amaru is a next-generation open-source antivirus for Windows 11 built with Rust, featuring real-time protection, YARA-based heuristic analysis, and Radare2 integration. The project aims to provide a modern, low-resource alternative to commercial antivirus solutions with transparency and customization as core values.

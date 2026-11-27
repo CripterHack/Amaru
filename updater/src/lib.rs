@@ -129,13 +129,7 @@ impl Updater {
         check_entry(&state)?;
 
         // A persistent lock file serializes independent service processes.
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(state.join("lock"))?;
-        FileExt::try_lock_exclusive(&lock)?;
+        let _lock = UpdateLock::acquire(&state.join("lock"))?;
         let previous = state.join("previous");
         if previous.exists() {
             if live.exists() {
@@ -222,6 +216,31 @@ async fn download(
         content.extend_from_slice(&chunk);
     }
     Ok(content)
+}
+
+struct UpdateLock(fs::File);
+
+impl UpdateLock {
+    fn acquire(path: &Path) -> io::Result<Self> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        FileExt::try_lock_exclusive(&file)?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for UpdateLock {
+    fn drop(&mut self) {
+        // On Unix a concurrent fork can retain a copy of this open file description
+        // until exec. Closing our descriptor alone can then delay the next update.
+        if let Err(error) = FileExt::unlock(&self.0) {
+            log::warn!("Error al liberar el bloqueo de actualización: {error}");
+        }
+    }
 }
 
 fn version(text: &str) -> Result<Version, UpdateError> {
@@ -344,4 +363,22 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_lock_releases_even_if_another_descriptor_remains_open() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lock");
+        let lock = UpdateLock::acquire(&path)?;
+        let _duplicate = lock.0.try_clone()?;
+        assert!(UpdateLock::acquire(&path).is_err());
+
+        drop(lock);
+        let _next_update = UpdateLock::acquire(&path)?;
+        Ok(())
+    }
 }
